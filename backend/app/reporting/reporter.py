@@ -134,6 +134,12 @@ class ForensicReporter:
             for a in bundle.active_alerts
             if any(dt in spec_types for dt in getattr(a, "detector_types", []))
         ]
+        beaconing_alerts = [
+            a
+            for a in bundle.active_alerts
+            if "network_beaconing" in getattr(a, "detector_types", [])
+        ]
+        packet_evidence_rows = self._collect_packet_evidence_rows(bundle)
 
         template = self.jinja_env.get_template("report.html.j2")
         html_content = template.render(
@@ -142,6 +148,8 @@ class ForensicReporter:
             top_flows=top_flows,
             recommended_steps=recommended_steps,
             specialized_alerts=specialized_alerts,
+            beaconing_alerts=beaconing_alerts,
+            packet_evidence_rows=packet_evidence_rows,
         )
         out_path.write_text(html_content, encoding="utf-8")
         return out_path
@@ -223,17 +231,25 @@ class ForensicReporter:
         # 2. Executive Summary
         story.append(p("2. Executive Summary", h2_style))
         s = bundle.summary
-        active_inc_count = len(getattr(bundle, "active_incidents", []))
+        total_alerts_n = s.get("total_alerts", len(bundle.alerts))
+        allow_alerts_n = s.get("allowlisted_alerts", s["suppressed_events"])
+        corr_inc_n = s.get("correlated_incidents", len(getattr(bundle, "incidents", [])))
+        active_inc_n = s.get("active_incidents", len(getattr(bundle, "active_incidents", [])))
+        allow_inc_n = s.get(
+            "allowlisted_incidents", len(getattr(bundle, "suppressed_incidents", []))
+        )
         story.append(
             p(
                 f"Analysed {s['total_packets']:,} packets across {s['total_flows']:,} flows "
                 f"({s['unique_source_ips']} unique source IPs, "
                 f"{s['unique_destination_ips']} unique destination IPs). "
-                f"Correlated {s['suspicious_events']} active suspicious event(s) into "
-                f"{active_inc_count} incident(s) ({s['critical_alerts']} Critical, "
-                f"{s['high_alerts']} High, {s['medium_alerts']} Medium) and "
-                f"{s['suppressed_events']} allowlist-tagged event(s), mapped to "
-                f"{len(bundle.mitre_mappings)} MITRE ATT&CK technique(s)."
+                f"Total alerts: {total_alerts_n} ({s['suspicious_events']} active, "
+                f"{allow_alerts_n} allowlisted). Correlated incidents: {corr_inc_n} "
+                f"({active_inc_n} active, {allow_inc_n} allowlisted). "
+                f"Active severity breakdown: {s['critical_alerts']} Critical, "
+                f"{s['high_alerts']} High, {s['medium_alerts']} Medium, "
+                f"{s['low_alerts']} Low; mapped to {len(bundle.mitre_mappings)} "
+                f"MITRE ATT&CK technique(s)."
             )
         )
         story.append(
@@ -273,33 +289,42 @@ class ForensicReporter:
 
         # 5. Correlated Incidents
         story.append(p("5. Correlated Security Incidents", h2_style))
-        inc_rows = [[p("ID", cell_style), p("Sev", cell_style), p("Risk/Conf", cell_style),
-                     p("Incident Title", cell_style), p("Hosts & Window", cell_style)]]
+        inc_rows = [
+            [
+                p("ID & Status", cell_style),
+                p("Sev", cell_style),
+                p("Risk (0-100)", cell_style),
+                p("Conf", cell_style),
+                p("Incident Title & Hosts", cell_style),
+            ]
+        ]
         for inc in getattr(bundle, "incidents", [])[:30]:
-            hosts_txt = (
+            tag = " [ALLOWLISTED]" if getattr(inc, "suppressed", False) else ""
+            title_hosts = (
+                f"{inc.incident_title}{tag} | "
                 f"{', '.join(inc.source_hosts)} -> {', '.join(inc.destination_hosts)} "
-                f"({inc.alert_count} alerts, {len(inc.packet_indices)} pkts)"
+                f"({inc.alert_count} alerts, {len(inc.packet_indices)} pkt refs)"
             )
             inc_rows.append([
-                p(inc.incident_id, cell_style),
+                p(f"{inc.incident_id} ({inc.status})", cell_style),
                 p(inc.overall_severity, cell_style),
-                p(f"{inc.risk_score}/{int(inc.overall_confidence * 100)}%", cell_style),
-                p(inc.incident_title, cell_style),
-                p(hosts_txt, cell_style),
+                p(f"{inc.risk_score:.1f}", cell_style),
+                p(f"{int(inc.overall_confidence * 100)}%", cell_style),
+                p(title_hosts, cell_style),
             ])
         if len(inc_rows) == 1:
             inc_rows.append([p("-", cell_style), p("-", cell_style), p("-", cell_style),
-                             p("No incidents", cell_style), p("-", cell_style)])
+                             p("-", cell_style), p("No incidents", cell_style)])
         story.append(
             self._styled_table(
                 inc_rows,
-                [0.95 * inch, 0.7 * inch, 0.8 * inch, 2.35 * inch, 2.4 * inch],
+                [1.35 * inch, 0.7 * inch, 0.8 * inch, 0.55 * inch, 3.8 * inch],
                 has_header=True,
             )
         )
 
-        # 6. DNS, HTTP, TLS Metadata
-        story.append(p("6. DNS, HTTP & TLS Metadata Summary", h2_style))
+        # 6. DNS, HTTP, TLS Metadata & Beaconing Findings
+        story.append(p("6. DNS, HTTP, TLS Metadata & Beaconing Analysis", h2_style))
         dns = bundle.dns_analysis
         http = bundle.http_analysis
         tls = bundle.tls_analysis
@@ -312,10 +337,41 @@ class ForensicReporter:
                 "(encrypted payloads not inspected)."
             )
         )
+        beaconing_alerts = [
+            a
+            for a in bundle.active_alerts
+            if "network_beaconing" in getattr(a, "detector_types", [])
+        ]
+        beacon_rows = [[p("Endpoint", cell_style), p("Conns", cell_style),
+                        p("Mean Int (s)", cell_style), p("Periodicity/CV", cell_style),
+                        p("Note", cell_style)]]
+        for b in beaconing_alerts[:20]:
+            ev = b.evidence if isinstance(b.evidence, dict) else vars(b.evidence)
+            beacon_rows.append([
+                p(f"{b.source_ip} -> {b.destination_ip}:{b.destination_port or '-'}", cell_style),
+                p(str(ev.get("connection_count", "-")), cell_style),
+                p(str(ev.get("mean_interval_seconds", "-")), cell_style),
+                p(
+                    f"P={ev.get('periodicity_score', '-')} / CV={ev.get('interval_cv', '-')}",
+                    cell_style,
+                ),
+                p(b.explanation[:130], cell_style),
+            ])
+        if len(beacon_rows) > 1:
+            story.append(p("Dedicated Beaconing Findings:", body_style))
+            story.append(
+                self._styled_table(
+                    beacon_rows,
+                    [1.8 * inch, 0.65 * inch, 0.9 * inch, 1.15 * inch, 2.7 * inch],
+                    has_header=True,
+                )
+            )
+        else:
+            story.append(p("No periodic beaconing findings triggered.", body_style))
 
         # 7. Detected Suspicious Events & Risk Explanations
         story.append(p("7. Individual Suspicious Events, Risk Scoring & Packet Refs", h2_style))
-        alert_rows = [[p("Sev", cell_style), p("Risk/Conf", cell_style), p("Title", cell_style),
+        alert_rows = [[p("Sev", cell_style), p("Risk / Conf", cell_style), p("Title", cell_style),
                        p("Endpoints & Pkts", cell_style), p("Explanation & Rationale", cell_style)]]
         for a in bundle.alerts[:40]:
             title_txt = f"{a.title}{' [ALLOWLISTED]' if a.suppressed else ''}"
@@ -325,12 +381,13 @@ class ForensicReporter:
                 f"[pkts: {pkt_refs}]"
             )
             rationale = getattr(a.priority_breakdown, "rationale", "")
+            risk_v = getattr(a.priority_breakdown, "risk_score", None) or a.priority_score
             alert_rows.append([
                 p(a.severity, cell_style),
-                p(f"{a.priority_score}/{int(a.confidence * 100)}%", cell_style),
+                p(f"Risk: {float(risk_v):.1f}\nConf: {int(a.confidence * 100)}%", cell_style),
                 p(title_txt, cell_style),
                 p(ep_txt, cell_style),
-                p(f"{a.explanation[:160]} | Score: {rationale[:110]}", cell_style),
+                p(f"{a.explanation[:150]} | {rationale[:100]}", cell_style),
             ])
         if len(alert_rows) == 1:
             alert_rows.append([p("-", cell_style), p("-", cell_style),
@@ -389,8 +446,34 @@ class ForensicReporter:
             )
         )
 
-        # 10. Recommended Investigation Steps & Limitations
-        story.append(p("10. Recommended Steps & Limitations", h2_style))
+        # 10. Structured Packet-Level Evidence Reference Table
+        story.append(p("10. Packet-Level Forensic Evidence References", h2_style))
+        pkt_ev_rows = self._collect_packet_evidence_rows(bundle)
+        pkt_table_rows = [[p("Pkt #", cell_style), p("UTC Time", cell_style),
+                           p("Src -> Dst", cell_style), p("Proto", cell_style),
+                           p("Flow / Incident / Alert", cell_style)]]
+        for row in pkt_ev_rows[:25]:
+            pkt_table_rows.append([
+                p(str(row["packet_index"]), cell_style),
+                p(str(row["timestamp"])[:22], cell_style),
+                p(f"{row['src']} -> {row['dst']}", cell_style),
+                p(str(row["protocol"]), cell_style),
+                p(f"{row['context']} ({row['ref_id']})", cell_style),
+            ])
+        if len(pkt_table_rows) == 1:
+            pkt_table_rows.append([p("-", cell_style), p("-", cell_style),
+                                   p("No packet references attached", cell_style),
+                                   p("-", cell_style), p("-", cell_style)])
+        story.append(
+            self._styled_table(
+                pkt_table_rows,
+                [0.65 * inch, 1.45 * inch, 2.0 * inch, 0.7 * inch, 2.4 * inch],
+                has_header=True,
+            )
+        )
+
+        # 11. Recommended Investigation Steps & Limitations
+        story.append(p("11. Recommended Steps & Limitations", h2_style))
         for step in self._collect_recommended_steps(bundle)[:10]:
             story.append(p(f"• {step}"))
         story.append(Spacer(1, 6))
@@ -399,6 +482,52 @@ class ForensicReporter:
 
         doc.build(story)
         return out_path
+
+    def _collect_packet_evidence_rows(
+        self, bundle: InvestigationBundle
+    ) -> list[dict[str, Any]]:
+        """Collect structured packet-level evidence rows from alerts and protocol records."""
+        rows: list[dict[str, Any]] = []
+        seen_keys: set[tuple[int, str]] = set()
+        for a in getattr(bundle, "alerts", [])[:25]:
+            pkt_idxs = list(getattr(a, "packet_indices", []) or [])
+            for pidx in pkt_idxs[:4]:
+                key = (int(pidx), a.alert_id)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                rows.append(
+                    {
+                        "packet_index": pidx,
+                        "timestamp": a.timestamp,
+                        "src": f"{a.source_ip or '-'}:{a.source_port or '-'}",
+                        "dst": f"{a.destination_ip or '-'}:{a.destination_port or '-'}",
+                        "protocol": a.protocol,
+                        "context": a.title[:60],
+                        "ref_id": (
+                            f"inc={a.incident_id or '-'} | "
+                            f"flow={a.flow_id or '-'} | alert={a.alert_id}"
+                        ),
+                    }
+                )
+        for rec in bundle.dns_analysis.get("records", [])[:15]:
+            if len(rows) >= 35:
+                break
+            pidx = rec.get("packet_index")
+            if pidx is None:
+                continue
+            rows.append(
+                {
+                    "packet_index": pidx,
+                    "timestamp": rec.get("timestamp", ""),
+                    "src": rec.get("src_ip") or "-",
+                    "dst": rec.get("dst_ip") or "-",
+                    "protocol": f"DNS/{rec.get('query_type') or 'Q'}",
+                    "context": str(rec.get("query_name") or "-")[:60],
+                    "ref_id": "dns_record",
+                }
+            )
+        return rows[:35]
 
     def _collect_recommended_steps(self, bundle: InvestigationBundle) -> list[str]:
         steps: list[str] = []

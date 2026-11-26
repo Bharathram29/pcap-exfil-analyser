@@ -151,15 +151,22 @@ class AuditService:
         *,
         stored_pcap_path: Path,
         expected_pcap_sha256: str,
+        expected_file_size_bytes: int | None = None,
         html_report_path: Path,
         expected_html_sha256: str | None,
         pdf_report_path: Path,
         expected_pdf_sha256: str | None,
     ) -> dict[str, Any]:
-        """Verify on-disk SHA-256 digests of original capture and generated reports."""
+        """Verify on-disk SHA-256 digests and file sizes of capture and reports."""
         pcap_present = stored_pcap_path.is_file()
         pcap_actual = compute_sha256_file(stored_pcap_path) if pcap_present else None
         pcap_match = bool(pcap_present and pcap_actual == expected_pcap_sha256)
+        actual_size = stored_pcap_path.stat().st_size if pcap_present else None
+        size_match = (
+            bool(pcap_present and actual_size == expected_file_size_bytes)
+            if expected_file_size_bytes is not None
+            else pcap_present
+        )
 
         html_present = html_report_path.is_file()
         html_actual = compute_sha256_file(html_report_path) if html_present else None
@@ -177,11 +184,21 @@ class AuditService:
             else pdf_present
         )
 
+        evidence_modified = bool(
+            not pcap_match
+            or not size_match
+            or (html_present and expected_html_sha256 and not html_match)
+            or (pdf_present and expected_pdf_sha256 and not pdf_match)
+        )
+
         return {
             "capture_present": pcap_present,
             "capture_expected_sha256": expected_pcap_sha256,
             "capture_actual_sha256": pcap_actual,
             "capture_integrity_verified": pcap_match,
+            "expected_file_size_bytes": expected_file_size_bytes,
+            "actual_file_size_bytes": actual_size,
+            "file_size_verified": size_match,
             "html_report_present": html_present,
             "html_report_expected_sha256": expected_html_sha256,
             "html_report_actual_sha256": html_actual,
@@ -190,9 +207,10 @@ class AuditService:
             "pdf_report_expected_sha256": expected_pdf_sha256,
             "pdf_report_actual_sha256": pdf_actual,
             "pdf_report_verified": pdf_match,
+            "evidence_modified": evidence_modified,
             "disclaimer": (
-                "SHA-256 verification checks local file integrity against recorded digests; "
-                "this does not constitute formal legal certification or full organizational "
+                "SHA-256 and file-size verification checks local artifact integrity against "
+                "recorded digests; this does not constitute legal certification or full "
                 "chain-of-custody compliance without procedural controls."
             ),
         }

@@ -46,8 +46,12 @@ def upload_pcap(
             detail="Uploaded file is missing a filename.",
         )
 
+    investigator = (request.headers.get("X-Investigator") or "analyst").strip()[:64] or "analyst"
+
     try:
-        metadata = ingestor.ingest_stream(file.file, original_filename=file.filename)
+        metadata = ingestor.ingest_stream(
+            file.file, original_filename=file.filename, investigator_id=investigator
+        )
     except FileTooLargeError as exc:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,

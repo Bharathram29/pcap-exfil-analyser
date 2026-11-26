@@ -94,10 +94,17 @@ def extract_dns_metadata(
 
     rcode_str: str | None = None
     response_ips: list[str] = []
+    answer_count = 0
+    response_size_bytes = 0
     if is_response:
         rcode_int = int(getattr(dns, "rcode", 0) or 0)
         rcode_str = DNS_RCODES.get(rcode_int, f"RCODE{rcode_int}")
         response_ips = _extract_dns_response_ips(dns)
+        answer_count = int(getattr(dns, "ancount", 0) or len(response_ips))
+        try:
+            response_size_bytes = len(bytes(dns))
+        except Exception:
+            response_size_bytes = 0
 
     subdomain_labels: list[str] = []
     parent_domain: str | None = None
@@ -135,6 +142,8 @@ def extract_dns_metadata(
         parent_domain=parent_domain,
         label_count=label_count,
         matched_query_timestamp=matched_ts,
+        answer_count=answer_count,
+        response_size_bytes=response_size_bytes,
     )
 
 

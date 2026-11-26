@@ -38,7 +38,7 @@ def _decoded_fields(pkt: NormalizedPacket) -> dict[str, Any]:
 
 
 class PacketStore:
-    """Persist and query bounded packet-level forensic evidence with pagination."""
+    """Persist and query bounded packet-level forensic evidence with 4-hop traceability."""
 
     def save_packets(
         self,
@@ -49,10 +49,14 @@ class PacketStore:
         alerts: list[SecurityAlert],
         max_store: int = 100_000,
     ) -> int:
-        """Persist packet metadata rows in batches, linking flow_id and alert_ids."""
+        """Persist packet metadata rows in batches, linking flow_id, alert_ids, and incident_ids."""
         pkt_to_alerts: dict[int, list[str]] = defaultdict(list)
         flow_to_alerts: dict[str, list[str]] = defaultdict(list)
+        alert_to_incident: dict[str, str] = {}
+
         for alert in alerts:
+            if alert.incident_id:
+                alert_to_incident[alert.alert_id] = alert.incident_id
             for pidx in alert.packet_indices:
                 if alert.alert_id not in pkt_to_alerts[pidx]:
                     pkt_to_alerts[pidx].append(alert.alert_id)
@@ -68,6 +72,9 @@ class PacketStore:
                 for aid in flow_to_alerts[fid]:
                     if aid not in aids:
                         aids.append(aid)
+
+            inc_ids = sorted({alert_to_incident[aid] for aid in aids if aid in alert_to_incident})
+            tcp_flags = pkt.tcp.flag_names if pkt.tcp and pkt.tcp.flag_names else None
 
             rows.append(
                 (
@@ -85,7 +92,9 @@ class PacketStore:
                     pkt.ttl,
                     pkt.ip_version,
                     fid,
+                    tcp_flags,
                     json.dumps(aids),
+                    json.dumps(inc_ids),
                     json.dumps(_decoded_fields(pkt)),
                     pkt.raw_summary[:512],
                 )
@@ -100,9 +109,9 @@ class PacketStore:
                     INSERT INTO packets (
                         analysis_id, packet_index, timestamp_epoch, timestamp_utc,
                         src_ip, dst_ip, src_port, dst_port, protocol, transport_protocol,
-                        length, ttl, ip_version, flow_id, alert_ids_json,
-                        decoded_fields_json, raw_summary
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        length, ttl, ip_version, flow_id, tcp_flags, alert_ids_json,
+                        incident_ids_json, decoded_fields_json, raw_summary
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows[start : start + batch_size],
                 )
@@ -121,6 +130,7 @@ class PacketStore:
         start_time: float | None = None,
         end_time: float | None = None,
         alert_id: str | None = None,
+        incident_id: str | None = None,
         flow_id: str | None = None,
         search: str | None = None,
         limit: int = 50,
@@ -133,6 +143,7 @@ class PacketStore:
         proto_v = protocol.strip() if protocol else None
         flow_v = flow_id.strip() if flow_id else None
         alert_like = f'%"{alert_id.strip()}"%' if alert_id else None
+        incident_like = f'%"{incident_id.strip()}"%' if incident_id else None
         search_like = f"%{search.strip()}%" if search else None
 
         filter_params = (
@@ -146,6 +157,7 @@ class PacketStore:
             end_time, end_time,
             flow_v, flow_v,
             alert_like, alert_like,
+            incident_like, incident_like,
             search_like, search_like, search_like, search_like, search_like, search_like,
         )
 
@@ -168,6 +180,7 @@ class PacketStore:
                   AND (? IS NULL OR timestamp_epoch <= ?)
                   AND (? IS NULL OR flow_id = ?)
                   AND (? IS NULL OR alert_ids_json LIKE ?)
+                  AND (? IS NULL OR incident_ids_json LIKE ?)
                   AND (
                     ? IS NULL
                     OR src_ip LIKE ?
@@ -185,8 +198,8 @@ class PacketStore:
                 """
                 SELECT packet_index, timestamp_epoch, timestamp_utc, src_ip, dst_ip,
                        src_port, dst_port, protocol, transport_protocol, length,
-                       ttl, ip_version, flow_id, alert_ids_json, decoded_fields_json,
-                       raw_summary
+                       ttl, ip_version, flow_id, tcp_flags, alert_ids_json,
+                       incident_ids_json, decoded_fields_json, raw_summary
                 FROM packets
                 WHERE analysis_id = ?
                   AND (? IS NULL OR src_ip = ? OR dst_ip = ?)
@@ -202,6 +215,7 @@ class PacketStore:
                   AND (? IS NULL OR timestamp_epoch <= ?)
                   AND (? IS NULL OR flow_id = ?)
                   AND (? IS NULL OR alert_ids_json LIKE ?)
+                  AND (? IS NULL OR incident_ids_json LIKE ?)
                   AND (
                     ? IS NULL
                     OR src_ip LIKE ?
@@ -237,8 +251,8 @@ class PacketStore:
                 """
                 SELECT packet_index, timestamp_epoch, timestamp_utc, src_ip, dst_ip,
                        src_port, dst_port, protocol, transport_protocol, length,
-                       ttl, ip_version, flow_id, alert_ids_json, decoded_fields_json,
-                       raw_summary
+                       ttl, ip_version, flow_id, tcp_flags, alert_ids_json,
+                       incident_ids_json, decoded_fields_json, raw_summary
                 FROM packets
                 WHERE analysis_id = ? AND packet_index = ?
                 """,
@@ -264,7 +278,9 @@ class PacketStore:
             "ttl": row["ttl"],
             "ip_version": row["ip_version"],
             "flow_id": row["flow_id"],
+            "tcp_flags": row["tcp_flags"],
             "alert_ids": json.loads(row["alert_ids_json"]),
+            "incident_ids": json.loads(row["incident_ids_json"]),
             "decoded_fields": json.loads(row["decoded_fields_json"]),
             "raw_summary": row["raw_summary"],
         }

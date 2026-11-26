@@ -116,7 +116,7 @@ docker compose up --build
 ## Testing, Security Scanning & Evaluation Metrics
 
 ```powershell
-# Backend tests (52 unit + integration + evaluation tests), Ruff lint, Bandit security scan
+# Backend tests (58 unit + integration + evaluation + upgrade tests), Ruff lint, Bandit security scan
 cd C:\PYTHON\pcap-exfil-analyser\backend
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\ruff.exe check .
@@ -141,8 +141,8 @@ Measured by [`scripts/evaluate_detection_suite.py`](scripts/evaluate_detection_s
 | **Recall** | `1.0` (`TP=7, FN=0`) |
 | **F1-Score** | `1.0` |
 | **False-Positive Rate** | `0.0` (`FP=0, TN=6`) |
-| **Total Pipeline Time (8 PCAPs)** | `~4.45 s` |
-| **Peak Traced Python Memory** | `~3.86 MiB` (`3,955.8 KiB`) |
+| **Total Pipeline Time (8 PCAPs)** | `~5.34 s` (`5,336.47 ms`) |
+| **Peak Traced Python Memory** | `~4.22 MiB` (`4,324.1 KiB`) |
 
 *Note: These metrics reflect controlled synthetic test captures and do not guarantee equivalent accuracy on arbitrary production traffic with NAT, proxies, or encrypted payloads.*
 
@@ -150,6 +150,9 @@ Measured by [`scripts/evaluate_detection_suite.py`](scripts/evaluate_detection_s
 
 ## Documentation Index
 
+- [`docs/IMPROVEMENT_AUDIT.md`](docs/IMPROVEMENT_AUDIT.md) — Complete codebase & forensic architecture audit and improvement plan
+- [`docs/IMPLEMENTATION_CHANGELOG.md`](docs/IMPLEMENTATION_CHANGELOG.md) — Summary of multi-phase backend, UI, and report upgrades
+- [`docs/TESTING_AND_VALIDATION.md`](docs/TESTING_AND_VALIDATION.md) — Test suite, static analysis, security scan, and benchmark validation results
 - [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) — Phase 1 audit findings and baseline assessment
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Backend/frontend modules and data flow
 - [`docs/DETECTION_LOGIC.md`](docs/DETECTION_LOGIC.md) — Heuristic detectors, YAML rules, correlation & scoring

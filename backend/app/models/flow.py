@@ -48,6 +48,10 @@ class NetworkFlow:
     handshake_completed: bool = False
     is_midstream: bool = False
     retransmission_count: int = 0
+    retransmission_reliability: str = "not_applicable"
+    connection_frequency_per_min: float = 0.0
+    bytes_per_second: float = 0.0
+    packets_per_second: float = 0.0
 
     observed_dns_queries: list[str] = field(default_factory=list)
     observed_http_hosts: list[str] = field(default_factory=list)

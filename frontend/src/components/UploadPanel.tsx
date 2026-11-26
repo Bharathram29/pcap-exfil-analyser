@@ -7,11 +7,14 @@ import {
   Loader2,
   StopCircle,
   UploadCloud,
+  UserCheck,
 } from "lucide-react";
 import type { InvestigationListItem } from "../types/forensics";
 import { formatBytes, shortTimestamp } from "../utils/format";
 
 interface UploadPanelProps {
+  investigatorId: string;
+  onInvestigatorChange: (id: string) => void;
   onUploadAndAnalyze: (file: File) => Promise<void>;
   onCancelAnalysis?: () => Promise<void>;
   uploadProgress: number;
@@ -25,6 +28,8 @@ interface UploadPanelProps {
 }
 
 export const UploadPanel: React.FC<UploadPanelProps> = ({
+  investigatorId,
+  onInvestigatorChange,
   onUploadAndAnalyze,
   onCancelAnalysis,
   uploadProgress,
@@ -94,15 +99,30 @@ export const UploadPanel: React.FC<UploadPanelProps> = ({
             onChange={(e) => void handleFile(e.target.files?.[0])}
           />
 
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => inputRef.current?.click()}
-            className="mt-4 inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <FileUp className="h-4 w-4" />
-            {busy ? "Processing Capture..." : "Select PCAP File"}
-          </button>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-300">
+              <UserCheck className="h-3.5 w-3.5 text-sky-400" />
+              <span>Investigator ID:</span>
+              <input
+                type="text"
+                value={investigatorId}
+                disabled={busy}
+                onChange={(e) => onInvestigatorChange(e.target.value)}
+                placeholder="analyst"
+                className="w-32 bg-transparent font-mono text-xs text-slate-100 focus:outline-none"
+              />
+            </label>
+
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => inputRef.current?.click()}
+              className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 shadow hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <FileUp className="h-4 w-4" />
+              {busy ? "Processing Capture..." : "Select PCAP File"}
+            </button>
+          </div>
 
           {stage === "uploading" && (
             <div className="mt-4 w-full max-w-md">

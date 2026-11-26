@@ -18,7 +18,7 @@ from app.models.alert import (
     TimelineEvent,
 )
 from app.models.detection import DetectionFinding
-from app.models.incident import CorrelatedIncident, CorrelationConfig
+from app.models.incident import INCIDENT_STATUSES, CorrelatedIncident, CorrelationConfig
 from app.models.mitre import MitreMapping
 from app.services.allowlist import AllowlistManager
 from app.services.incident_correlator import IncidentCorrelator
@@ -215,24 +215,26 @@ class AlertManager:
                             pkt_indices_set.add(pidx)
         pkt_indices = sorted(pkt_indices_set)[:500]
 
-        # Compute evidence-grounded confidence separate from risk
+        # Compute evidence-grounded confidence separate from risk (never boosted by duplicates)
         max_conf = max(f.confidence for f in group_findings)
         evidence_quality, quality_notes = self._evaluate_evidence_quality(
             group_findings, pkt_indices
         )
-        # Do not artificially inflate confidence when evidence is sparse
+        score_change_reasons: list[str] = []
         has_gaps = any(f.evidence.get("missed_beacon_gaps", 0) > 0 for f in group_findings)
         if not pkt_indices and has_gaps:
             adjusted_conf = round(max(0.30, max_conf - 0.05), 2)
+            score_change_reasons.append(
+                "Confidence reduced by 0.05 due to capture gaps and missing packet references."
+            )
         else:
             adjusted_conf = round(max_conf, 2)
 
-        # Prevent CRITICAL severity when confidence/evidence quality is low
-        max_sev = primary.severity
-        if max_sev == "CRITICAL" and adjusted_conf < scfg.critical_min_confidence:
-            max_sev = "HIGH"
-        if max_sev == "HIGH" and adjusted_conf < scfg.high_min_confidence:
-            max_sev = "MEDIUM"
+        if len(group_findings) > 1:
+            score_change_reasons.append(
+                f"Merged {len(group_findings)} overlapping/duplicate detections "
+                "without inflating confidence."
+            )
 
         # Merge MITRE mappings across all findings in this correlation group
         group_mitre = mapper.aggregate_incident_mappings(group_findings)
@@ -247,14 +249,27 @@ class AlertManager:
                     break
 
         priority_breakdown = self._compute_priority(
-            severity=max_sev,
+            raw_severity=primary.severity,
             confidence=adjusted_conf,
             evidence_quality=evidence_quality,
             quality_notes=quality_notes,
             group_findings=group_findings,
             destination_ip=dst_ip,
             correlated_count=correlated_count,
+            score_change_reasons=score_change_reasons,
             scoring_config=scfg,
+        )
+        max_sev = self._calibrate_severity_from_risk(
+            raw_severity=primary.severity,
+            risk_score=priority_breakdown.risk_score,
+            confidence=adjusted_conf,
+            scoring_config=scfg,
+            score_change_reasons=priority_breakdown.score_change_reasons,
+        )
+        priority_breakdown.severity_explanation = (
+            f"Severity {max_sev} derived from risk={priority_breakdown.risk_score:.1f}/100 "
+            f"(bands: 0-20 Low, 21-40 Medium, 41-70 High, 71-100 Critical) and "
+            f"confidence={adjusted_conf:.2f}."
         )
 
         # Merge evidence cleanly without losing contributing rule details
@@ -351,28 +366,84 @@ class AlertManager:
             notes.append("capture gaps detected")
         return round(max(0.1, min(1.0, quality)), 2), notes
 
+    def _calibrate_severity_from_risk(
+        self,
+        *,
+        raw_severity: str,
+        risk_score: float,
+        confidence: float,
+        scoring_config: ScoringConfig,
+        score_change_reasons: list[str],
+    ) -> str:
+        if raw_severity == "INFORMATIONAL":
+            return "INFORMATIONAL"
+
+        if risk_score >= 71.0:
+            band_sev = "CRITICAL"
+        elif risk_score >= 41.0:
+            band_sev = "HIGH"
+        elif risk_score >= 21.0:
+            band_sev = "MEDIUM"
+        else:
+            band_sev = "LOW"
+
+        # Confidence & low-quality guardrails prevent inflation from weak indicators
+        if raw_severity == "LOW" and confidence < scoring_config.high_min_confidence:
+            if band_sev != "LOW":
+                score_change_reasons.append(
+                    f"Capped severity from {band_sev} to LOW because raw indicator is LOW "
+                    f"with confidence {confidence:.2f} < {scoring_config.high_min_confidence:.2f}."
+                )
+            return "LOW"
+
+        if band_sev == "CRITICAL" and confidence < scoring_config.critical_min_confidence:
+            score_change_reasons.append(
+                f"Downgraded CRITICAL to HIGH because confidence {confidence:.2f} "
+                f"< {scoring_config.critical_min_confidence:.2f}."
+            )
+            band_sev = "HIGH"
+
+        if band_sev == "HIGH" and confidence < scoring_config.high_min_confidence:
+            score_change_reasons.append(
+                f"Downgraded HIGH to MEDIUM because confidence {confidence:.2f} "
+                f"< {scoring_config.high_min_confidence:.2f}."
+            )
+            band_sev = "MEDIUM"
+
+        return band_sev
+
     def _compute_priority(
         self,
-        severity: str,
+        raw_severity: str,
         confidence: float,
         evidence_quality: float,
         quality_notes: list[str],
         group_findings: list[DetectionFinding],
         destination_ip: str | None,
         correlated_count: int,
+        score_change_reasons: list[str] | None = None,
         scoring_config: ScoringConfig | None = None,
     ) -> PriorityBreakdown:
         scfg = scoring_config or ScoringConfig()
-        weights = scfg.severity_weights or SEVERITY_BASE_WEIGHTS
-        sev_score = weights.get(severity, 10.0)
-        conf_score = round(confidence * scfg.max_confidence_points, 2)
-        quality_score = round(evidence_quality * scfg.max_evidence_quality_points, 2)
+        impact_weights = scfg.severity_weights or {
+            "CRITICAL": 36.0,
+            "HIGH": 28.0,
+            "MEDIUM": 18.0,
+            "LOW": 6.0,
+            "INFORMATIONAL": 2.0,
+        }
+        sev_score = impact_weights.get(raw_severity, 6.0)
+        conf_score = round(confidence * 8.0, 2)
+        quality_score = round(evidence_quality * 10.0, 2)
 
-        # Volume score from max observed bytes across merged evidence (log-scaled)
         max_bytes = 0
         repeat_count = 1
+        indicators: list[str] = []
         for f in group_findings:
             ev = f.evidence
+            for ind in ev.get("triggered_indicators", []) or []:
+                if isinstance(ind, str) and ind not in indicators:
+                    indicators.append(ind)
             for b_key in (
                 "outbound_bytes",
                 "max_payload_bytes",
@@ -393,37 +464,31 @@ class AlertManager:
                 if isinstance(cval, int):
                     repeat_count = max(repeat_count, cval)
 
+        if not indicators:
+            indicators = [f.detection_name for f in group_findings]
+
         volume_score = (
-            round(
-                min(scfg.max_volume_points, math.log10(max(max_bytes, 10)) * 2.0),
-                2,
-            )
+            round(min(16.0, math.log10(max(max_bytes, 10)) * 2.5), 2)
             if max_bytes > 0
             else 0.0
         )
-        ext_score = scfg.external_destination_points if is_external_ip(destination_ip) else 0.0
-        repeat_score = round(
-            min(scfg.max_frequency_points, max(0, repeat_count - 1) * 1.5),
-            2,
-        )
-        corr_score = round(
-            min(scfg.max_correlation_points, max(0, correlated_count - 1) * 4.0),
-            2,
-        )
+        ext_score = 8.0 if is_external_ip(destination_ip) else 0.0
+        repeat_score = round(min(10.0, max(0, repeat_count - 1) * 1.5), 2)
+        corr_score = round(min(12.0, max(0, correlated_count - 1) * 4.0), 2)
 
         raw_total = (
             sev_score
             + conf_score
+            + quality_score
             + volume_score
             + ext_score
             + repeat_score
             + corr_score
-            + quality_score
         )
         total = round(min(100.0, raw_total), 2)
         risk_score = total
         rationale = (
-            f"Severity({severity})={sev_score} + Confidence({confidence:.2f})={conf_score} "
+            f"Impact({raw_severity})={sev_score} + Confidence({confidence:.2f})={conf_score} "
             f"+ EvidenceQuality({evidence_quality:.2f})={quality_score} "
             f"+ Volume={volume_score} + ExternalDst={ext_score} "
             f"+ Frequency={repeat_score} + Correlation({correlated_count})={corr_score}"
@@ -444,6 +509,9 @@ class AlertManager:
             risk_score=risk_score,
             evidence_quality_score=quality_score,
             confidence_rationale=conf_rationale,
+            contributing_indicators=indicators[:12],
+            evidence_quality=evidence_quality,
+            score_change_reasons=list(score_change_reasons or []),
         )
 
     def build_timeline(self, alerts: list[SecurityAlert]) -> list[TimelineEvent]:
@@ -606,9 +674,9 @@ class AlertManager:
         new_status: str,
     ) -> bool:
         """Update a correlated incident's investigation status in SQLite."""
-        if new_status not in INVESTIGATION_STATUSES:
+        if new_status not in INCIDENT_STATUSES:
             raise ValueError(
-                f"Invalid status {new_status!r}; expected one of {INVESTIGATION_STATUSES}"
+                f"Invalid incident status {new_status!r}; expected one of {INCIDENT_STATUSES}"
             )
         prefix = f"{analysis_id}:"
         db_inc_id = incident_id if incident_id.startswith(prefix) else f"{prefix}{incident_id}"

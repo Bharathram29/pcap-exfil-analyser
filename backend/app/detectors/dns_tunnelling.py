@@ -1,4 +1,4 @@
-"""DNS tunnelling detector combining entropy, structural, timing, and encoding indicators."""
+"""DNS tunnelling detector combining entropy, structural, response, timing, and window analysis."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from app.models.detection import DetectionContext, DetectionFinding
 from app.models.packet import NormalizedPacket
 from app.utils.entropy import character_distribution_metrics, shannon_entropy
 
+UNUSUAL_DNS_TYPES = {"TXT", "ANY", "NULL", "CNAME", "MX", "SRV", "DNSKEY", "HINFO"}
+
 
 class DnsTunnellingDetector(BaseDetector):
     """Detect suspected DNS tunnelling using multi-indicator correlation."""
@@ -18,18 +20,25 @@ class DnsTunnellingDetector(BaseDetector):
     detector_name = "dns_tunnelling"
 
     def detect(self, context: DetectionContext) -> list[DetectionFinding]:
-        grouped: dict[tuple[str | None, str | None, str], list[NormalizedPacket]] = defaultdict(
+        queries: dict[tuple[str | None, str | None, str], list[NormalizedPacket]] = defaultdict(
+            list
+        )
+        responses: dict[tuple[str | None, str | None, str], list[NormalizedPacket]] = defaultdict(
             list
         )
         for pkt in context.packets:
-            if pkt.dns is None or pkt.dns.is_response or not pkt.dns.query_name:
+            if pkt.dns is None or not pkt.dns.query_name:
                 continue
             parent = pkt.dns.parent_domain or pkt.dns.query_name
-            grouped[(pkt.src_ip, pkt.dst_ip, parent)].append(pkt)
+            if pkt.dns.is_response:
+                responses[(pkt.dst_ip, pkt.src_ip, parent)].append(pkt)
+            else:
+                queries[(pkt.src_ip, pkt.dst_ip, parent)].append(pkt)
 
         findings: list[DetectionFinding] = []
-        for (src_ip, dst_ip, parent), pkts in sorted(grouped.items()):
-            finding = self._evaluate_domain_group(src_ip, dst_ip, parent, pkts)
+        for (src_ip, dst_ip, parent), pkts in sorted(queries.items()):
+            resp_pkts = responses.get((src_ip, dst_ip, parent), [])
+            finding = self._evaluate_domain_group(src_ip, dst_ip, parent, pkts, resp_pkts)
             if finding is not None:
                 findings.append(finding)
         return findings
@@ -40,6 +49,7 @@ class DnsTunnellingDetector(BaseDetector):
         dst_ip: str | None,
         parent: str,
         pkts: list[NormalizedPacket],
+        resp_pkts: list[NormalizedPacket],
     ) -> DetectionFinding | None:
         cfg = self.config
         ordered = sorted(pkts, key=lambda p: p.timestamp)
@@ -67,14 +77,28 @@ class DnsTunnellingDetector(BaseDetector):
         unique_subs = len(set(subdomains))
         unique_sub_ratio = round(unique_subs / query_count, 4) if query_count else 0.0
 
-        txt_count = sum(
+        unusual_type_count = sum(
             1
             for p in ordered
-            if p.dns and (p.dns.query_type or "").upper() in {"TXT", "ANY", "NULL", "CNAME"}
+            if p.dns
+            and (
+                (p.dns.query_type or "").upper() in UNUSUAL_DNS_TYPES
+                or (p.dns.query_type or "").upper().startswith("TYPE")
+            )
         )
-        txt_ratio = round(txt_count / query_count, 4) if query_count else 0.0
+        txt_count = sum(
+            1 for p in ordered if p.dns and (p.dns.query_type or "").upper() == "TXT"
+        )
+        unusual_type_ratio = round(unusual_type_count / query_count, 4) if query_count else 0.0
 
-        # Evaluate encoded-looking pattern prevalence across all subdomains
+        # Repeated fixed-length chunked subdomain pattern
+        repeated_chunk_pattern = False
+        long_sub_lens = [s_len for s_len in sub_lengths if s_len >= 20]
+        if len(long_sub_lens) >= 5 and unique_subs >= 5:
+            if max(long_sub_lens) - min(long_sub_lens) <= 4:
+                repeated_chunk_pattern = True
+
+        # Encoded-looking pattern prevalence across all subdomains
         encoded_count = 0
         for sub in subdomains:
             if len(sub) < 16:
@@ -94,6 +118,30 @@ class DnsTunnellingDetector(BaseDetector):
         span = timestamps[-1] - timestamps[0] if len(timestamps) > 1 else 0.0
         qpm = round((query_count / max(span, 1.0)) * 60.0, 2)
 
+        # Time-window 10-second burst count
+        max_10s_burst = 0
+        for i, ts_start in enumerate(timestamps):
+            cnt = 0
+            for ts_cur in timestamps[i:]:
+                if ts_cur - ts_start <= 10.0:
+                    cnt += 1
+                else:
+                    break
+            max_10s_burst = max(max_10s_burst, cnt)
+
+        # Response size & query-to-response correlation
+        resp_sizes = [
+            p.dns.response_size_bytes or p.length
+            for p in resp_pkts
+            if p.dns
+        ]
+        max_resp_bytes = max(resp_sizes, default=0)
+        avg_resp_bytes = round(sum(resp_sizes) / len(resp_sizes), 2) if resp_sizes else 0.0
+        matched_resps = sum(
+            1 for p in resp_pkts if p.dns and p.dns.matched_query_timestamp is not None
+        )
+        resp_ratio = round(len(resp_pkts) / query_count, 2) if query_count else 0.0
+
         # Query timing analysis
         mean_interval = 0.0
         interval_cv: float | None = None
@@ -111,7 +159,7 @@ class DnsTunnellingDetector(BaseDetector):
             indicators.append(
                 f"High subdomain Shannon entropy (max={max_entropy}, avg={avg_entropy})"
             )
-            score += 0.20
+            score += 0.18
         if (
             max_qlen >= cfg.dns_min_query_length
             or avg_qlen >= cfg.dns_min_avg_query_length
@@ -121,7 +169,7 @@ class DnsTunnellingDetector(BaseDetector):
                 f"Long DNS query/subdomain length (avg_qlen={avg_qlen}, max_qlen={max_qlen}, "
                 f"max_sublen={max_sublen})"
             )
-            score += 0.20
+            score += 0.18
         if unique_subs >= cfg.dns_min_unique_subdomains and (
             unique_sub_ratio >= cfg.dns_min_unique_subdomain_ratio or unique_subs >= 10
         ):
@@ -129,35 +177,47 @@ class DnsTunnellingDetector(BaseDetector):
                 f"High unique subdomain fan-out ({unique_subs}/{query_count}, "
                 f"ratio={unique_sub_ratio})"
             )
-            score += 0.20
+            score += 0.18
         if query_count >= cfg.dns_min_query_count or (
             query_count >= 4 and qpm >= cfg.dns_min_queries_per_minute
-        ):
-            indicators.append(f"Elevated DNS query frequency ({query_count} queries, ~{qpm}/min)")
-            score += 0.14
-        if txt_count >= cfg.dns_min_txt_count or (
-            query_count >= 4 and txt_ratio >= cfg.dns_min_txt_ratio
+        ) or max_10s_burst >= 6:
+            indicators.append(
+                f"Elevated DNS query burst ({query_count} queries, ~{qpm}/min, "
+                f"10s peak={max_10s_burst})"
+            )
+            score += 0.13
+        if unusual_type_count >= cfg.dns_min_txt_count or (
+            query_count >= 4 and unusual_type_ratio >= cfg.dns_min_txt_ratio
         ):
             indicators.append(
-                f"Abnormal TXT/ANY/CNAME record distribution ({txt_count}/{query_count}, "
-                f"{txt_ratio:.0%})"
+                f"Unusual DNS record distribution ({unusual_type_count}/{query_count}, "
+                f"TXT={txt_count}, ratio={unusual_type_ratio:.0%})"
             )
             score += 0.14
         if encoded_count >= 3:
             indicators.append(
                 f"Repeated encoded-looking subdomains ({encoded_count}/{len(subdomains)} queries)"
             )
-            score += 0.14
+            score += 0.13
+        if repeated_chunk_pattern:
+            indicators.append("Repeated fixed-width subdomain chunk pattern across unique queries")
+            score += 0.08
+        if max_resp_bytes >= 220:
+            indicators.append(
+                "Large DNS response payload observed "
+                f"(max={max_resp_bytes} B, avg={avg_resp_bytes} B)"
+            )
+            score += 0.10
         if interval_cv is not None and interval_cv <= 0.30 and query_count >= 5:
             indicators.append(
                 f"Automated query timing cadence (mean={mean_interval}s, CV={interval_cv})"
             )
-            score += 0.10
+            score += 0.08
         if parent in {d.lower() for d in cfg.dns_suspicious_parent_domains}:
             indicators.append(f"Parent domain {parent} matches suspicious domain list")
-            score += 0.18
+            score += 0.16
 
-        # Never assume high entropy alone proves DNS tunnelling
+        # Never rely on a single indicator or entropy alone
         if len(indicators) < 2:
             return None
 
@@ -173,7 +233,7 @@ class DnsTunnellingDetector(BaseDetector):
         sample_queries = sorted({p.dns.query_name for p in ordered if p.dns and p.dns.query_name})[
             :8
         ]
-        pkt_indices = [p.packet_index for p in ordered[:300]]
+        pkt_indices = sorted({p.packet_index for p in [*ordered[:200], *resp_pkts[:100]]})
         det_hash = hashlib.sha256(f"dns_tunnel:{src_ip}:{parent}".encode()).hexdigest()[:12]
 
         return DetectionFinding(
@@ -193,6 +253,11 @@ class DnsTunnellingDetector(BaseDetector):
             evidence={
                 "parent_domain": parent,
                 "query_count": query_count,
+                "response_count": len(resp_pkts),
+                "matched_response_count": matched_resps,
+                "query_to_response_ratio": resp_ratio,
+                "max_response_bytes": max_resp_bytes,
+                "avg_response_bytes": avg_resp_bytes,
                 "unique_subdomains": unique_subs,
                 "unique_subdomain_ratio": unique_sub_ratio,
                 "avg_query_length": avg_qlen,
@@ -202,9 +267,12 @@ class DnsTunnellingDetector(BaseDetector):
                 "max_entropy": max_entropy,
                 "avg_entropy": avg_entropy,
                 "avg_query_name_entropy": avg_qname_entropy,
-                "txt_or_any_count": txt_count,
-                "txt_or_any_ratio": txt_ratio,
+                "txt_count": txt_count,
+                "txt_or_any_count": unusual_type_count,
+                "txt_or_any_ratio": unusual_type_ratio,
                 "encoded_subdomain_count": encoded_count,
+                "repeated_chunk_pattern": repeated_chunk_pattern,
+                "max_10s_burst_queries": max_10s_burst,
                 "queries_per_minute_estimate": qpm,
                 "mean_query_interval_seconds": mean_interval,
                 "query_interval_cv": interval_cv,
@@ -214,11 +282,12 @@ class DnsTunnellingDetector(BaseDetector):
                 "packet_indices": pkt_indices[:100],
             },
             explanation=(
-                f"Observed {query_count} DNS queries from {src_ip} toward parent domain "
-                f"'{parent}' triggering {len(indicators)} independent tunnelling indicators: "
+                f"Observed {query_count} DNS queries and {len(resp_pkts)} responses from "
+                f"{src_ip} toward parent domain '{parent}' triggering {len(indicators)} "
+                "independent indicators: "
                 + "; ".join(indicators)
-                + ". Entropy or length alone does not prove tunnelling; benign CDN, DNSSEC, "
-                "or telemetry subdomains can elevate label entropy."
+                + ". Entropy or length alone does not prove DNS tunnelling; benign CDN, "
+                "DNSSEC, or telemetry traffic can produce elevated label entropy."
             ),
             recommended_investigation_steps=[
                 f"Inspect passive DNS and WHOIS/registrar age for '{parent}'.",

@@ -1,21 +1,22 @@
 import React, { useMemo, useState } from "react";
-import { ArrowUpDown, ExternalLink, Filter, Layers, Search, ShieldCheck } from "lucide-react";
-import type { CorrelatedIncident, InvestigationStatus, SecurityAlert } from "../types/forensics";
+import { ArrowUpDown, ExternalLink, Filter, Layers, Network, Search, ShieldAlert, ShieldCheck } from "lucide-react";
+import type { CorrelatedIncident, IncidentStatus, SecurityAlert } from "../types/forensics";
 import { shortTimestamp } from "../utils/format";
 import { SeverityBadge } from "./SeverityBadge";
 
 interface IncidentsViewProps {
   incidents: CorrelatedIncident[];
   alerts: SecurityAlert[];
-  onIncidentStatusChange: (incidentId: string, status: InvestigationStatus) => Promise<void>;
-  onInspectPackets: (opts: { alertId?: string; flowId?: string }) => void;
+  onIncidentStatusChange: (incidentId: string, status: IncidentStatus) => Promise<void>;
+  onInspectPackets: (opts: { alertId?: string; flowId?: string; incidentId?: string }) => void;
+  onInspectAlert?: (alertId: string) => void;
+  onInspectFlow?: (flowId: string) => void;
 }
 
-const STATUS_OPTIONS: InvestigationStatus[] = [
-  "New",
+const STATUS_OPTIONS: IncidentStatus[] = [
+  "Open",
   "Investigating",
-  "Confirmed Suspicious",
-  "False Positive",
+  "Resolved",
   "Closed",
 ];
 
@@ -32,6 +33,8 @@ export const IncidentsView: React.FC<IncidentsViewProps> = ({
   alerts,
   onIncidentStatusChange,
   onInspectPackets,
+  onInspectAlert,
+  onInspectFlow,
 }) => {
   const [severityFilter, setSeverityFilter] = useState<string>("ALL");
   const [includeSuppressed, setIncludeSuppressed] = useState<boolean>(true);
@@ -83,7 +86,7 @@ export const IncidentsView: React.FC<IncidentsViewProps> = ({
     }
   };
 
-  const handleStatus = async (incidentId: string, status: InvestigationStatus) => {
+  const handleStatus = async (incidentId: string, status: IncidentStatus) => {
     setUpdatingId(incidentId);
     try {
       await onIncidentStatusChange(incidentId, status);
@@ -225,7 +228,7 @@ export const IncidentsView: React.FC<IncidentsViewProps> = ({
                   value={selected.status}
                   disabled={updatingId === selected.incident_id}
                   onChange={(e) =>
-                    void handleStatus(selected.incident_id, e.target.value as InvestigationStatus)
+                    void handleStatus(selected.incident_id, e.target.value as IncidentStatus)
                   }
                   className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-100"
                 >
@@ -253,16 +256,26 @@ export const IncidentsView: React.FC<IncidentsViewProps> = ({
 
               <p className="text-slate-300">{selected.correlation_reason}</p>
 
-              {selected.flow_ids.length > 0 && (
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => onInspectPackets({ flowId: selected.flow_ids[0] })}
+                  onClick={() => onInspectPackets({ incidentId: selected.incident_id })}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-500/20"
                 >
                   <Layers className="h-3.5 w-3.5" />
-                  Inspect Supporting Packets ({selected.packet_indices.length} refs)
+                  Inspect Incident Packets ({selected.packet_indices.length} refs)
                 </button>
-              )}
+                {selected.flow_ids.length > 0 && onInspectFlow && (
+                  <button
+                    type="button"
+                    onClick={() => onInspectFlow(selected.flow_ids[0])}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-300 hover:bg-cyan-500/20"
+                  >
+                    <Network className="h-3.5 w-3.5" />
+                    Inspect Flow ({selected.flow_ids[0]})
+                  </button>
+                )}
+              </div>
 
               <div>
                 <h4 className="mb-1.5 font-semibold text-slate-200">
@@ -276,13 +289,34 @@ export const IncidentsView: React.FC<IncidentsViewProps> = ({
                     >
                       <div className="flex items-center justify-between gap-2">
                         <SeverityBadge severity={a.severity} />
-                        <button
-                          type="button"
-                          onClick={() => onInspectPackets({ alertId: a.alert_id })}
-                          className="text-[11px] text-sky-400 hover:underline"
-                        >
-                          Packets ({a.packet_indices?.length ?? 0})
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {onInspectAlert && (
+                            <button
+                              type="button"
+                              onClick={() => onInspectAlert(a.alert_id)}
+                              className="inline-flex items-center gap-1 text-[11px] text-amber-300 hover:underline"
+                            >
+                              <ShieldAlert className="h-3 w-3" />
+                              Alert
+                            </button>
+                          )}
+                          {a.flow_id && onInspectFlow && (
+                            <button
+                              type="button"
+                              onClick={() => onInspectFlow(a.flow_id!)}
+                              className="text-[11px] text-cyan-300 hover:underline"
+                            >
+                              Flow
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onInspectPackets({ alertId: a.alert_id })}
+                            className="text-[11px] text-sky-400 hover:underline"
+                          >
+                            Packets ({a.packet_indices?.length ?? 0})
+                          </button>
+                        </div>
                       </div>
                       <div className="mt-1 font-medium text-slate-100">{a.title}</div>
                       <div className="mt-0.5 text-[11px] text-slate-400">

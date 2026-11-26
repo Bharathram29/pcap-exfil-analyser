@@ -131,12 +131,15 @@
         <strong>{{ "{:,}".format(bundle.summary.total_flows) }}</strong> reconstructed bidirectional flows
         ({{ bundle.summary.unique_source_ips }} unique source IPs,
         {{ bundle.summary.unique_destination_ips }} unique destination IPs).
-        Related findings were consolidated into <strong>{{ bundle.active_incidents | length }}</strong> active correlated incident(s)
-        covering <strong>{{ bundle.summary.suspicious_events }}</strong> individual active suspicious event(s)
-        ({{ bundle.summary.critical_alerts }} Critical, {{ bundle.summary.high_alerts }} High,
-        {{ bundle.summary.medium_alerts }} Medium) and <strong>{{ bundle.summary.suppressed_events }}</strong>
-        allowlist-tagged event(s), mapped to <strong>{{ bundle.mitre_mappings | length }}</strong>
-        MITRE ATT&amp;CK Enterprise technique(s).
+        Total alerts: <strong>{{ bundle.summary.total_alerts | default(bundle.alerts | length) }}</strong>
+        (<strong>{{ bundle.summary.suspicious_events }}</strong> active,
+        <strong>{{ bundle.summary.allowlisted_alerts | default(bundle.summary.suppressed_events) }}</strong> allowlisted).
+        Correlated incidents: <strong>{{ bundle.summary.correlated_incidents | default(bundle.incidents | length) }}</strong>
+        (<strong>{{ bundle.summary.active_incidents | default(bundle.active_incidents | length) }}</strong> active,
+        <strong>{{ bundle.summary.allowlisted_incidents | default(bundle.suppressed_incidents | length) }}</strong> allowlisted).
+        Active severity breakdown: {{ bundle.summary.critical_alerts }} Critical, {{ bundle.summary.high_alerts }} High,
+        {{ bundle.summary.medium_alerts }} Medium, {{ bundle.summary.low_alerts }} Low;
+        mapped to <strong>{{ bundle.mitre_mappings | length }}</strong> MITRE ATT&amp;CK Enterprise technique(s).
       </p>
       <div class="callout">
         <strong>Forensic Integrity Notice:</strong>
@@ -229,23 +232,24 @@
     <div class="card">
       <table>
         <thead>
-          <tr><th>Incident ID</th><th>Severity</th><th>Risk / Conf</th><th>Title &amp; Categories</th><th>Hosts</th><th>Window (First → Last)</th><th>Alerts / Packets</th></tr>
+          <tr><th>Incident ID &amp; Status</th><th>Severity</th><th>Risk (0-100)</th><th>Confidence</th><th>Title &amp; Categories</th><th>Hosts</th><th>Window (First → Last)</th><th>Alerts / Packets</th></tr>
         </thead>
         <tbody>
           {% for inc in bundle.incidents %}
             <tr>
-              <td><code>{{ inc.incident_id }}</code></td>
+              <td><code>{{ inc.incident_id }}</code><br><small>{{ inc.status }}</small></td>
               <td><span class="badge sev-{{ inc.overall_severity }}">{{ inc.overall_severity }}</span>
                 {% if inc.suppressed %}<div class="suppressed-tag">Allowlisted</div>{% endif %}
               </td>
-              <td>{{ inc.risk_score }} / {{ (inc.overall_confidence * 100) | round | int }}%</td>
+              <td><strong>{{ inc.risk_score }}</strong></td>
+              <td>{{ (inc.overall_confidence * 100) | round | int }}%</td>
               <td><strong>{{ inc.incident_title }}</strong><br><small>{{ inc.detection_categories | join(", ") }}<br>{{ inc.correlation_reason }}</small></td>
               <td><code>{{ inc.source_hosts | join(", ") }}</code> → <code>{{ inc.destination_hosts | join(", ") }}</code></td>
               <td><small>{{ inc.first_seen }}<br>→ {{ inc.last_seen }}</small></td>
               <td>{{ inc.alert_count }} alert(s)<br>{{ inc.packet_indices | length }} pkt ref(s)</td>
             </tr>
           {% else %}
-            <tr><td colspan="7">No correlated incidents recorded.</td></tr>
+            <tr><td colspan="8">No correlated incidents recorded.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -312,6 +316,7 @@
 
     <h2>7. Specialized Findings: DNS Tunnelling, HTTP Uploads, Data Exfiltration &amp; Beaconing</h2>
     <div class="card">
+      <h3>All Specialized Exfiltration, Tunnelling &amp; Upload Findings</h3>
       <table>
         <thead><tr><th>Category</th><th>Alert Title</th><th>Endpoints</th><th>Key Metrics</th><th>Packet Refs</th></tr></thead>
         <tbody>
@@ -325,6 +330,25 @@
             </tr>
           {% else %}
             <tr><td colspan="5">No specialized exfiltration, tunnelling, upload, or beaconing findings triggered.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3>Beaconing &amp; Periodic Activity Findings</h3>
+      <table>
+        <thead><tr><th>Source → Destination</th><th>Connections</th><th>Mean Interval</th><th>Periodicity / CV</th><th>Conn/Hr</th><th>Assessment Note</th></tr></thead>
+        <tbody>
+          {% for b in beaconing_alerts %}
+            <tr>
+              <td><code>{{ b.source_ip or "-" }}</code> → <code>{{ b.destination_ip or "-" }}:{{ b.destination_port or "-" }}</code></td>
+              <td>{{ b.evidence.connection_count | default("-") }}</td>
+              <td>{{ b.evidence.mean_interval_seconds | default("-") }}s</td>
+              <td>P={{ b.evidence.periodicity_score | default("-") }} / CV={{ b.evidence.interval_cv | default("-") }}</td>
+              <td>{{ b.evidence.connections_per_hour | default("-") }}</td>
+              <td><small>{{ b.explanation }}</small></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6">No periodic outbound beaconing patterns triggered above threshold.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -376,7 +400,7 @@
     <div class="card">
       <table>
         <thead>
-          <tr><th>Severity</th><th>Risk / Conf</th><th>Alert &amp; Scoring Rationale</th><th>Endpoints</th><th>Packet Refs</th><th>Explanation &amp; Allowlist</th></tr>
+          <tr><th>Severity</th><th>Risk (0-100)</th><th>Confidence</th><th>Alert &amp; Scoring Rationale</th><th>Endpoints</th><th>Packet Refs</th><th>Explanation &amp; Allowlist</th></tr>
         </thead>
         <tbody>
           {% for a in bundle.alerts %}
@@ -384,8 +408,9 @@
               <td><span class="badge sev-{{ a.severity }}">{{ a.severity }}</span>
                 {% if a.suppressed %}<div class="suppressed-tag">Allowlisted (Suppressed)</div>{% endif %}
               </td>
-              <td>{{ a.priority_score }} / {{ (a.confidence * 100) | round | int }}%</td>
-              <td><strong>{{ a.title }}</strong><br><small>Status: {{ a.status }} | Rules: {{ a.contributing_rule_ids | join(", ") if a.contributing_rule_ids else a.detector_types | join(", ") }}<br>{{ a.priority_breakdown.rationale }}<br>{{ a.priority_breakdown.confidence_rationale | default("") }}</small></td>
+              <td><strong>{{ a.priority_breakdown.risk_score | default(a.priority_score) }}</strong></td>
+              <td>{{ (a.confidence * 100) | round | int }}%</td>
+              <td><strong>{{ a.title }}</strong><br><small>Status: {{ a.status }} | Rules: {{ a.contributing_rule_ids | join(", ") if a.contributing_rule_ids else a.detector_types | join(", ") }}<br>{{ a.priority_breakdown.rationale }}<br>{{ a.priority_breakdown.severity_explanation | default("") }}<br>{{ a.priority_breakdown.confidence_rationale | default("") }}</small></td>
               <td><code>{{ a.source_ip or "-" }}:{{ a.source_port or "-" }}</code> → <code>{{ a.destination_ip or "-" }}:{{ a.destination_port or "-" }}</code></td>
               <td><code>{{ a.packet_indices[:10] | join(", ") if a.packet_indices else "-" }}</code></td>
               <td>
@@ -396,7 +421,25 @@
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="6">No suspicious alerts triggered for this capture.</td></tr>
+            <tr><td colspan="7">No suspicious alerts triggered for this capture.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3>Packet-Level Evidence Reference Table</h3>
+      <table>
+        <thead><tr><th>Packet Index</th><th>Timestamp (UTC)</th><th>Endpoints</th><th>Protocol</th><th>Observed Context &amp; Correlation IDs</th></tr></thead>
+        <tbody>
+          {% for row in packet_evidence_rows %}
+            <tr>
+              <td><code>#{{ row.packet_index }}</code></td>
+              <td><code>{{ row.timestamp }}</code></td>
+              <td><code>{{ row.src }}</code> → <code>{{ row.dst }}</code></td>
+              <td>{{ row.protocol }}</td>
+              <td>{{ row.context }}<br><small><code>{{ row.ref_id }}</code></small></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5">No supporting packet references attached.</td></tr>
           {% endfor %}
         </tbody>
       </table>

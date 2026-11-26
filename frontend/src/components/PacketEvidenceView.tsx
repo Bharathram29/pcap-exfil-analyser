@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, FileSearch, Filter, Loader2, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, FileSearch, Filter, Loader2, Search, X } from "lucide-react";
 import { fetchPacketDetail, queryPackets } from "../services/api";
 import type { PacketEvidenceItem } from "../types/forensics";
-import { shortTimestamp } from "../utils/format";
+import { downloadTextFile, shortTimestamp } from "../utils/format";
 
 interface PacketEvidenceViewProps {
   analysisId: string;
-  initialFilter?: { alertId?: string; flowId?: string; ip?: string };
+  initialFilter?: { alertId?: string; flowId?: string; ip?: string; incidentId?: string };
   onClearFilter?: () => void;
 }
 
@@ -19,7 +19,10 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
   const [portFilter, setPortFilter] = useState("");
   const [protocolFilter, setProtocolFilter] = useState("ALL");
   const [alertIdFilter, setAlertIdFilter] = useState(initialFilter?.alertId ?? "");
+  const [incidentIdFilter, setIncidentIdFilter] = useState(initialFilter?.incidentId ?? "");
   const [flowIdFilter, setFlowIdFilter] = useState(initialFilter?.flowId ?? "");
+  const [startTimeFilter, setStartTimeFilter] = useState("");
+  const [endTimeFilter, setEndTimeFilter] = useState("");
   const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
   const limit = 50;
@@ -37,6 +40,7 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
   useEffect(() => {
     setIpFilter(initialFilter?.ip ?? "");
     setAlertIdFilter(initialFilter?.alertId ?? "");
+    setIncidentIdFilter(initialFilter?.incidentId ?? "");
     setFlowIdFilter(initialFilter?.flowId ?? "");
     setOffset(0);
   }, [initialFilter]);
@@ -50,7 +54,10 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
         port: portFilter || undefined,
         protocol: protocolFilter,
         alert_id: alertIdFilter || undefined,
+        incident_id: incidentIdFilter || undefined,
         flow_id: flowIdFilter || undefined,
+        start_time: startTimeFilter || undefined,
+        end_time: endTimeFilter || undefined,
         search: search || undefined,
         limit,
         offset,
@@ -62,7 +69,19 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [analysisId, ipFilter, portFilter, protocolFilter, alertIdFilter, flowIdFilter, search, offset]);
+  }, [
+    analysisId,
+    ipFilter,
+    portFilter,
+    protocolFilter,
+    alertIdFilter,
+    incidentIdFilter,
+    flowIdFilter,
+    startTimeFilter,
+    endTimeFilter,
+    search,
+    offset,
+  ]);
 
   useEffect(() => {
     void loadPackets();
@@ -137,14 +156,50 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
           </select>
         </div>
 
-        {(alertIdFilter || flowIdFilter || ipFilter) && (
+        <input
+          type="text"
+          value={incidentIdFilter}
+          onChange={(e) => {
+            setIncidentIdFilter(e.target.value);
+            setOffset(0);
+          }}
+          placeholder="Incident ID"
+          className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-slate-100 placeholder-slate-500"
+        />
+
+        <input
+          type="text"
+          value={startTimeFilter}
+          onChange={(e) => {
+            setStartTimeFilter(e.target.value);
+            setOffset(0);
+          }}
+          placeholder="Start Epoch/ISO"
+          className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-slate-100 placeholder-slate-500"
+        />
+
+        <input
+          type="text"
+          value={endTimeFilter}
+          onChange={(e) => {
+            setEndTimeFilter(e.target.value);
+            setOffset(0);
+          }}
+          placeholder="End Epoch/ISO"
+          className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-slate-100 placeholder-slate-500"
+        />
+
+        {(alertIdFilter || incidentIdFilter || flowIdFilter || ipFilter || startTimeFilter || endTimeFilter) && (
           <button
             type="button"
             onClick={() => {
               setAlertIdFilter("");
+              setIncidentIdFilter("");
               setFlowIdFilter("");
               setIpFilter("");
               setPortFilter("");
+              setStartTimeFilter("");
+              setEndTimeFilter("");
               setSearch("");
               setOffset(0);
               onClearFilter?.();
@@ -152,9 +207,23 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
             className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-300 hover:bg-amber-500/20"
           >
             <X className="h-3 w-3" />
-            Clear Active Drill-Down
+            Clear Drill-Down
           </button>
         )}
+
+        <button
+          type="button"
+          onClick={() =>
+            downloadTextFile(
+              `packets_${analysisId.slice(0, 8)}.json`,
+              JSON.stringify(packets, null, 2),
+              "application/json",
+            )
+          }
+          className="ml-auto inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] text-slate-200 hover:border-sky-500/50"
+        >
+          <Download className="h-3 w-3" /> JSON
+        </button>
       </div>
 
       {error && (
@@ -206,14 +275,15 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
                   <th className="px-3 py-2">Time</th>
                   <th className="px-3 py-2">Source → Destination</th>
                   <th className="px-3 py-2">Proto</th>
+                  <th className="px-3 py-2">Flags</th>
                   <th className="px-3 py-2">Len</th>
-                  <th className="px-3 py-2">Alerts</th>
+                  <th className="px-3 py-2">Alerts / Inc</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/80">
                 {packets.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                       No packets match the current filters.
                     </td>
                   </tr>
@@ -236,15 +306,25 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
                           {p.src_ip ?? "-"}:{p.src_port ?? "-"} → {p.dst_ip ?? "-"}:{p.dst_port ?? "-"}
                         </td>
                         <td className="px-3 py-2">{p.protocol}</td>
+                        <td className="px-3 py-2 font-mono text-[10px] text-slate-400">
+                          {p.tcp_flags || "-"}
+                        </td>
                         <td className="px-3 py-2 font-mono">{p.length}</td>
                         <td className="px-3 py-2">
-                          {p.alert_ids.length > 0 ? (
-                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 font-mono text-[10px] text-red-300">
-                              {p.alert_ids.length}
-                            </span>
-                          ) : (
-                            <span className="text-slate-600">-</span>
-                          )}
+                          <div className="flex items-center gap-1">
+                            {p.alert_ids.length > 0 ? (
+                              <span className="rounded bg-red-500/20 px-1.5 py-0.5 font-mono text-[10px] text-red-300">
+                                A:{p.alert_ids.length}
+                              </span>
+                            ) : (
+                              <span className="text-slate-600">-</span>
+                            )}
+                            {p.incident_ids && p.incident_ids.length > 0 && (
+                              <span className="rounded bg-sky-500/20 px-1.5 py-0.5 font-mono text-[10px] text-sky-300">
+                                I:{p.incident_ids.length}
+                              </span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -278,8 +358,13 @@ export const PacketEvidenceView: React.FC<PacketEvidenceViewProps> = ({
                 </div>
                 <div className="mt-1 text-slate-400">
                   Flow ID: {selectedDetail.packet.flow_id ?? "None"} • TTL:{" "}
-                  {selectedDetail.packet.ttl ?? "-"}
+                  {selectedDetail.packet.ttl ?? "-"} • Flags: {selectedDetail.packet.tcp_flags ?? "-"}
                 </div>
+                {selectedDetail.packet.incident_ids && selectedDetail.packet.incident_ids.length > 0 && (
+                  <div className="mt-1 text-sky-300">
+                    Incidents: {selectedDetail.packet.incident_ids.join(", ")}
+                  </div>
+                )}
               </div>
 
               {selectedDetail.alerts.length > 0 && (

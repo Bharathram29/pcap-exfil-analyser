@@ -25,8 +25,10 @@ import {
   fetchAnalysisStatus,
   fetchAuditAndIntegrity,
   fetchInvestigationBundle,
+  getInvestigatorId,
   getReportDownloadUrl,
   listInvestigations,
+  setInvestigatorId,
   startAnalysis,
   updateAlertStatus,
   updateIncidentStatus,
@@ -34,6 +36,7 @@ import {
 } from "./services/api";
 import type {
   AuditLogEntry,
+  IncidentStatus,
   IntegrityVerification,
   InvestigationBundle,
   InvestigationListItem,
@@ -44,6 +47,7 @@ type TabId = "overview" | "incidents" | "alerts" | "graph" | "timeline" | "flows
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [investigatorId, setInvestigatorState] = useState<string>(() => getInvestigatorId());
   const [bundle, setBundle] = useState<InvestigationBundle | null>(null);
   const [history, setHistory] = useState<InvestigationListItem[]>([]);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
@@ -52,8 +56,10 @@ export const App: React.FC = () => {
   const [runningId, setRunningId] = useState<string | null>(null);
   const [stage, setStage] = useState<"idle" | "uploading" | "analyzing" | "complete" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [focusedAlertId, setFocusedAlertId] = useState<string | undefined>(undefined);
+  const [focusedFlowId, setFocusedFlowId] = useState<string | undefined>(undefined);
   const [packetDrillFilter, setPacketDrillFilter] = useState<
-    { alertId?: string; flowId?: string; ip?: string } | undefined
+    { alertId?: string; flowId?: string; ip?: string; incidentId?: string } | undefined
   >(undefined);
   const [showIntegrityModal, setShowIntegrityModal] = useState(false);
   const [integrityData, setIntegrityData] = useState<{
@@ -108,7 +114,7 @@ export const App: React.FC = () => {
     cancelledRef.current = false;
     setStage("uploading");
     try {
-      const uploaded = await uploadPcapWithProgress(file, setUploadProgress);
+      const uploaded = await uploadPcapWithProgress(file, setUploadProgress, investigatorId);
       setRunningId(uploaded.analysis_id);
       setStage("analyzing");
       await startAnalysis(uploaded.analysis_id, true);
@@ -163,12 +169,12 @@ export const App: React.FC = () => {
     });
   };
 
-  const handleIncidentStatusChange = async (incidentId: string, newStatus: InvestigationStatus) => {
+  const handleIncidentStatusChange = async (incidentId: string, newStatus: IncidentStatus) => {
     if (!bundle) return;
     await updateIncidentStatus(bundle.analysis_id, incidentId, newStatus);
     setBundle((prev) => {
       if (!prev) return prev;
-      const patch = <T extends { incident_id: string; status: InvestigationStatus }>(arr: T[] = []) =>
+      const patch = <T extends { incident_id: string; status: IncidentStatus }>(arr: T[] = []) =>
         arr.map((item) => (item.incident_id === incidentId ? { ...item, status: newStatus } : item));
       return {
         ...prev,
@@ -179,9 +185,29 @@ export const App: React.FC = () => {
     });
   };
 
-  const handleInspectPackets = (opts: { alertId?: string; flowId?: string; ip?: string }) => {
+  const handleInspectAlert = (alertId: string) => {
+    setFocusedAlertId(alertId);
+    setActiveTab("alerts");
+  };
+
+  const handleInspectFlow = (flowId: string) => {
+    setFocusedFlowId(flowId);
+    setActiveTab("flows");
+  };
+
+  const handleInspectPackets = (opts: {
+    alertId?: string;
+    flowId?: string;
+    ip?: string;
+    incidentId?: string;
+  }) => {
     setPacketDrillFilter(opts);
     setActiveTab("packets");
+  };
+
+  const handleInvestigatorChange = (val: string) => {
+    setInvestigatorState(val);
+    setInvestigatorId(val);
   };
 
   const openIntegrityPanel = async () => {
@@ -259,6 +285,8 @@ export const App: React.FC = () => {
 
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6">
         <UploadPanel
+          investigatorId={investigatorId}
+          onInvestigatorChange={handleInvestigatorChange}
           onUploadAndAnalyze={handleUploadAndAnalyze}
           onCancelAnalysis={handleCancelAnalysis}
           uploadProgress={uploadProgress}
@@ -308,14 +336,18 @@ export const App: React.FC = () => {
                 alerts={bundle.alerts}
                 onIncidentStatusChange={handleIncidentStatusChange}
                 onInspectPackets={handleInspectPackets}
+                onInspectAlert={handleInspectAlert}
+                onInspectFlow={handleInspectFlow}
               />
             )}
 
             {activeTab === "alerts" && (
               <AlertManagement
                 alerts={bundle.alerts}
+                focusedAlertId={focusedAlertId}
                 onStatusChange={handleAlertStatusChange}
                 onInspectPackets={handleInspectPackets}
+                onInspectFlow={handleInspectFlow}
               />
             )}
 
@@ -339,6 +371,7 @@ export const App: React.FC = () => {
             {activeTab === "flows" && (
               <FlowsAndDnsView
                 bundle={bundle}
+                focusedFlowId={focusedFlowId}
                 onInspectPackets={handleInspectPackets}
               />
             )}
@@ -370,11 +403,28 @@ export const App: React.FC = () => {
               </button>
             </div>
             <div className="mb-4 space-y-1.5 rounded-lg border border-slate-800 bg-slate-950 p-3">
+              {integrityData.integrity.evidence_modified && (
+                <div className="mb-2 rounded border border-red-500/60 bg-red-500/15 px-3 py-2 text-xs font-semibold text-red-300">
+                  WARNING: Evidence integrity check detected file size or SHA-256 modification on disk.
+                </div>
+              )}
               <div>
-                Original Capture Verified:{" "}
+                Original Capture SHA-256 Verified:{" "}
                 <strong className={integrityData.integrity.capture_integrity_verified ? "text-emerald-400" : "text-red-400"}>
                   {String(integrityData.integrity.capture_integrity_verified)}
                 </strong>
+              </div>
+              <div>
+                Capture File Size Verified:{" "}
+                <strong className={integrityData.integrity.file_size_verified ? "text-emerald-400" : "text-red-400"}>
+                  {String(integrityData.integrity.file_size_verified ?? true)}
+                </strong>
+                {integrityData.integrity.expected_file_size_bytes !== undefined && (
+                  <span className="ml-2 font-mono text-[11px] text-slate-400">
+                    (expected {integrityData.integrity.expected_file_size_bytes} B / actual{" "}
+                    {integrityData.integrity.actual_file_size_bytes ?? "missing"} B)
+                  </span>
+                )}
               </div>
               <div>
                 HTML Report Verified:{" "}

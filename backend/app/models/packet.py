@@ -47,6 +47,8 @@ class DnsMetadata:
     parent_domain: str | None = None
     label_count: int = 0
     matched_query_timestamp: float | None = None
+    answer_count: int = 0
+    response_size_bytes: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

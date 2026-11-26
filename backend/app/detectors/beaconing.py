@@ -107,6 +107,13 @@ class BeaconingDetector(BaseDetector):
         durations = np.array([f.duration_seconds for f in ordered], dtype=float)
         mean_dur = round(float(np.mean(durations)), 3)
         std_dur = round(float(np.std(durations)), 3)
+        pkt_size_stds = [f.std_packet_size for f in ordered]
+        mean_pkt_size_std = (
+            round(sum(pkt_size_stds) / len(pkt_size_stds), 2) if pkt_size_stds else 0.0
+        )
+        span_seconds = max(1.0, float(timestamps[-1] - timestamps[0]))
+        conns_per_hour = round((len(ordered) / span_seconds) * 3600.0, 2)
+        periodicity_score = round(max(0.0, 1.0 - effective_cv), 3)
 
         low_volume = mean_bytes <= 4096.0
         consistent_size = byte_cv <= cfg.beacon_max_byte_cv
@@ -183,6 +190,10 @@ class BeaconingDetector(BaseDetector):
                 "missed_beacon_gaps": missed_gaps,
                 "mean_duration_seconds": mean_dur,
                 "std_duration_seconds": std_dur,
+                "connections_per_hour": conns_per_hour,
+                "active_span_seconds": round(span_seconds, 2),
+                "periodicity_score": periodicity_score,
+                "mean_packet_size_std": mean_pkt_size_std,
                 "mean_outbound_bytes": round(mean_bytes, 2),
                 "byte_cv": byte_cv,
                 "observed_tls_snis": snis,
@@ -194,10 +205,11 @@ class BeaconingDetector(BaseDetector):
             },
             explanation=(
                 f"Detected {len(ordered)} periodic outbound connections from {src_ip} to "
-                f"{dst_ip}:{dst_port} with estimated interval {effective_mean:.2f}s "
-                f"(std={effective_std:.2f}s, CV={effective_cv}, missed_gaps={missed_gaps}). "
-                "Regular check-in cadence can indicate automated C2 beaconing, though scheduled "
-                "health checks, NTP/telemetry polling, or SaaS keepalives can look similar."
+                f"{dst_ip}:{dst_port} (~{conns_per_hour}/hr, periodicity={periodicity_score}) "
+                f"with estimated interval {effective_mean:.2f}s (std={effective_std:.2f}s, "
+                f"CV={effective_cv}, missed_gaps={missed_gaps}). Periodic traffic is consistent "
+                "with automated check-ins, NOT proof of C2 compromise; scheduled health checks, "
+                "NTP/telemetry polling, or SaaS keepalives can exhibit similar timing."
             ),
             recommended_investigation_steps=[
                 (

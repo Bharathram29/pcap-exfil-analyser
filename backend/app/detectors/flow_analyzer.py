@@ -130,6 +130,14 @@ class _ActiveFlowState:
             ratio = float(self.bytes_i2r)
 
         state, state_basis, is_midstream = self._infer_connection_state()
+        eff_dur = max(duration, 0.001)
+        bps = round(total_bytes / eff_dur, 2) if total_bytes > 0 and duration > 0 else 0.0
+        pps = round(total_packets / eff_dur, 2) if total_packets > 0 and duration > 0 else 0.0
+        retx_rel = (
+            "observed_tcp_seq_retransmissions"
+            if self.transport_protocol == "TCP"
+            else "not_applicable"
+        )
 
         return NetworkFlow(
             flow_id=self.resolved_flow_id(),
@@ -166,6 +174,9 @@ class _ActiveFlowState:
             handshake_completed=self.saw_ack_after_synack,
             is_midstream=is_midstream,
             retransmission_count=self.retransmission_count,
+            retransmission_reliability=retx_rel,
+            bytes_per_second=bps,
+            packets_per_second=pps,
             observed_dns_queries=sorted(self.dns_queries),
             observed_http_hosts=sorted(self.http_hosts),
             observed_http_methods=sorted(self.http_methods),
@@ -286,6 +297,18 @@ class FlowAnalyzer:
             completed_flows.append(remaining.finalize())
 
         completed_flows.sort(key=lambda f: (f.first_seen, f.flow_id))
+
+        # Compute per-(initiator, responder) connection frequency across the capture
+        pair_times: dict[tuple[str, str], list[float]] = {}
+        for f in completed_flows:
+            pair_times.setdefault((f.initiator_ip, f.responder_ip), []).append(f.first_seen)
+        pair_freq: dict[tuple[str, str], float] = {}
+        for pair, times in pair_times.items():
+            span = max(1.0, max(times) - min(times)) if len(times) > 1 else 60.0
+            pair_freq[pair] = round((len(times) / span) * 60.0, 2)
+        for f in completed_flows:
+            f.connection_frequency_per_min = pair_freq.get((f.initiator_ip, f.responder_ip), 0.0)
+
         total_flow_packets = sum(f.total_packets for f in completed_flows)
         total_flow_bytes = sum(f.total_bytes for f in completed_flows)
 

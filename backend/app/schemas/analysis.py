@@ -52,10 +52,9 @@ class AlertStatusUpdateResponse(BaseModel):
 
 class IncidentStatusUpdateRequest(BaseModel):
     status: Literal[
-        "New",
+        "Open",
         "Investigating",
-        "Confirmed Suspicious",
-        "False Positive",
+        "Resolved",
         "Closed",
     ]
 

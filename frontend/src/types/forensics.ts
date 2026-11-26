@@ -7,6 +7,8 @@ export type InvestigationStatus =
   | "False Positive"
   | "Closed";
 
+export type IncidentStatus = "Open" | "Investigating" | "Resolved" | "Closed";
+
 export interface CaptureMetadata {
   analysis_id: string;
   original_filename: string;
@@ -36,6 +38,10 @@ export interface PriorityBreakdown {
   risk_score?: number;
   evidence_quality_score?: number;
   confidence_rationale?: string;
+  contributing_indicators?: string[];
+  evidence_quality?: number;
+  severity_explanation?: string;
+  score_change_reasons?: string[];
 }
 
 export interface AllowlistMatch {
@@ -98,7 +104,7 @@ export interface CorrelatedIncident {
   overall_severity: Severity;
   overall_confidence: number;
   risk_score: number;
-  status: InvestigationStatus;
+  status: IncidentStatus;
   source_hosts: string[];
   destination_hosts: string[];
   source_ports: number[];
@@ -155,6 +161,10 @@ export interface NetworkFlow {
   handshake_completed?: boolean;
   is_midstream?: boolean;
   retransmission_count: number;
+  retransmission_reliability?: string;
+  connection_frequency_per_min?: number;
+  bytes_per_second?: number;
+  packets_per_second?: number;
   observed_dns_queries: string[];
   observed_http_hosts: string[];
   observed_http_methods?: string[];
@@ -177,7 +187,9 @@ export interface PacketEvidenceItem {
   ttl: number | null;
   ip_version: number | null;
   flow_id: string | null;
+  tcp_flags?: string | null;
   alert_ids: string[];
+  incident_ids?: string[];
   decoded_fields: Record<string, unknown>;
   raw_summary: string;
 }
@@ -234,7 +246,11 @@ export interface InvestigationSummaryStats {
   tls_handshakes: number;
   suspicious_events: number;
   suppressed_events: number;
+  total_alerts?: number;
+  allowlisted_alerts?: number;
+  correlated_incidents?: number;
   active_incidents?: number;
+  allowlisted_incidents?: number;
   total_incidents?: number;
   critical_alerts: number;
   high_alerts: number;
@@ -404,10 +420,15 @@ export interface IntegrityVerification {
   analysis_id: string;
   capture_present: boolean;
   capture_integrity_verified: boolean;
+  expected_file_size_bytes?: number | null;
+  actual_file_size_bytes?: number | null;
+  file_size_verified?: boolean;
   html_report_present: boolean;
   html_report_verified: boolean;
   pdf_report_present: boolean;
   pdf_report_verified: boolean;
   capture_expected_sha256: string;
+  capture_actual_sha256?: string | null;
+  evidence_modified?: boolean;
   disclaimer: string;
 }

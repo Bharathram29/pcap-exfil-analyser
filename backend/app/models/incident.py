@@ -7,6 +7,13 @@ from typing import Any
 
 from app.models.mitre import MitreMapping
 
+INCIDENT_STATUSES = (
+    "Open",
+    "Investigating",
+    "Resolved",
+    "Closed",
+)
+
 
 @dataclass(slots=True)
 class CorrelationConfig:

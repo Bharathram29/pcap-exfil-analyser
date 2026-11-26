@@ -21,14 +21,20 @@ interface OverviewKpisProps {
 
 export const OverviewKpis: React.FC<OverviewKpisProps> = ({ bundle }) => {
   const { summary, capture_metadata: meta } = bundle;
+  const totalAlertsCount = summary.total_alerts ?? bundle.alerts.length;
+  const allowlistedAlertsCount = summary.allowlisted_alerts ?? summary.suppressed_events ?? 0;
+  const correlatedIncidentsCount =
+    summary.correlated_incidents ?? summary.total_incidents ?? bundle.incidents?.length ?? 0;
   const activeIncidentsCount = summary.active_incidents ?? bundle.active_incidents?.length ?? 0;
+  const allowlistedIncidentsCount =
+    summary.allowlisted_incidents ?? bundle.suppressed_incidents?.length ?? 0;
 
   const cards = [
     { label: "Total Packets", value: summary.total_packets.toLocaleString(), icon: Activity, tone: "text-sky-400" },
     { label: "Network Flows", value: summary.total_flows.toLocaleString(), icon: Network, tone: "text-cyan-400" },
     { label: "Unique Hosts", value: (summary.unique_source_ips + summary.unique_destination_ips).toLocaleString(), icon: Server, tone: "text-indigo-400" },
-    { label: "Active Incidents", value: activeIncidentsCount.toLocaleString(), icon: Layers, tone: "text-rose-400" },
-    { label: "Suspicious Events", value: summary.suspicious_events.toLocaleString(), icon: AlertTriangle, tone: "text-amber-400" },
+    { label: "Active Incidents", value: `${activeIncidentsCount} / ${correlatedIncidentsCount}`, icon: Layers, tone: "text-rose-400" },
+    { label: "Active Alerts", value: `${summary.suspicious_events} / ${totalAlertsCount}`, icon: AlertTriangle, tone: "text-amber-400" },
     { label: "Critical Alerts", value: summary.critical_alerts.toLocaleString(), icon: ShieldAlert, tone: "text-red-400" },
     { label: "High Alerts", value: summary.high_alerts.toLocaleString(), icon: ShieldAlert, tone: "text-orange-400" },
     { label: "DNS Queries", value: summary.dns_queries.toLocaleString(), icon: ShieldCheck, tone: "text-emerald-400" },
@@ -58,11 +64,12 @@ export const OverviewKpis: React.FC<OverviewKpisProps> = ({ bundle }) => {
           <div className="flex flex-wrap items-center gap-3 text-slate-400">
             <span>Outbound: <strong className="text-slate-200">{formatBytes(summary.outbound_bytes)}</strong></span>
             <span>Inbound: <strong className="text-slate-200">{formatBytes(summary.inbound_bytes)}</strong></span>
-            {summary.suppressed_events > 0 && (
-              <span className="rounded-full bg-slate-800 px-2.5 py-0.5 text-slate-300">
-                {summary.suppressed_events} Allowlisted
-              </span>
-            )}
+            <span className="rounded-full bg-slate-800 px-2.5 py-0.5 text-slate-300">
+              {allowlistedAlertsCount} Allowlisted Alerts
+            </span>
+            <span className="rounded-full bg-slate-800 px-2.5 py-0.5 text-slate-300">
+              {allowlistedIncidentsCount} Allowlisted Incidents
+            </span>
           </div>
         </div>
 

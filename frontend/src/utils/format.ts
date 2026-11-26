@@ -27,3 +27,27 @@ export function shortTimestamp(utcIso: string): string {
   if (!utcIso) return "-";
   return utcIso.replace("T", " ").replace("+00:00", " UTC").slice(0, 23);
 }
+
+export function downloadTextFile(filename: string, content: string, mimeType: string): void {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+export function toCsv(
+  headers: string[],
+  rows: Array<Array<string | number | boolean | null | undefined>>,
+): string {
+  const esc = (val: string | number | boolean | null | undefined): string => {
+    const raw = val === null || val === undefined ? "" : String(val);
+    const safe = /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
+  return [headers.map(esc).join(","), ...rows.map((r) => r.map(esc).join(","))].join("\n");
+}

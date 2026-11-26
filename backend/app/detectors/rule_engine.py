@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +17,7 @@ from app.models.flow import NetworkFlow
 from app.models.packet import NormalizedPacket
 from app.utils.entropy import shannon_entropy
 from app.utils.network import is_external_ip
+from app.utils.network import is_raw_ip_host as _is_raw_ip
 
 logger = get_logger("detectors.rule_engine")
 
@@ -83,17 +83,6 @@ class RuleLoadResult:
     rules: list[DetectionRuleSchema] = field(default_factory=list)
     disabled_count: int = 0
     errors: list[str] = field(default_factory=list)
-
-
-def _is_raw_ip(host: str | None) -> bool:
-    if not host:
-        return False
-    candidate = host.split(":", 1)[0].strip("[]")
-    try:
-        ipaddress.ip_address(candidate)
-        return True
-    except ValueError:
-        return False
 
 
 class YamlRuleEngine:

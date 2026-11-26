@@ -138,6 +138,7 @@ class PcapIngestor:
         stream: BinaryIO,
         original_filename: str,
         analysis_id: str | None = None,
+        investigator_id: str = "analyst",
     ) -> CaptureMetadata:
         """Stream an uploaded binary file to confined storage with size & header checks."""
         try:
@@ -175,6 +176,7 @@ class PcapIngestor:
                 analysis_id=inv_id,
                 original_filename=original_filename,
                 clean_name=clean_name,
+                investigator_id=investigator_id,
             )
         except Exception:
             if target_dir.exists():
@@ -233,6 +235,7 @@ class PcapIngestor:
         analysis_id: str,
         original_filename: str,
         clean_name: str,
+        investigator_id: str = "analyst",
     ) -> CaptureMetadata:
         file_size = dest_path.stat().st_size
         capture_format, link_type, link_name, supported, warnings = inspect_capture_header(
@@ -255,18 +258,20 @@ class PcapIngestor:
             supported_link_layer=supported,
             warnings=warnings,
         )
-        self._record_investigation(metadata)
+        inv_actor = (investigator_id or "analyst").strip()[:64] or "analyst"
+        self._record_investigation(metadata, investigator_id=inv_actor)
         AuditService().log_event(
             self.db,
             analysis_id,
             "PCAP_INGESTED",
-            actor="ingest",
+            actor=inv_actor,
             details={
                 "filename": clean_name,
                 "file_size_bytes": file_size,
                 "sha256": sha256,
                 "capture_format": capture_format,
                 "link_layer_type": link_type,
+                "investigator_id": inv_actor,
             },
         )
         logger.info(
@@ -278,7 +283,9 @@ class PcapIngestor:
         )
         return metadata
 
-    def _record_investigation(self, metadata: CaptureMetadata) -> None:
+    def _record_investigation(
+        self, metadata: CaptureMetadata, investigator_id: str = "analyst"
+    ) -> None:
         """Persist initial forensic investigation record in SQLite."""
         try:
             with self.db.connection() as conn:
@@ -286,8 +293,8 @@ class PcapIngestor:
                     """
                     INSERT INTO investigations (
                         analysis_id, filename, stored_path, file_size_bytes,
-                        sha256, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        sha256, status, created_at, updated_at, investigator_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         metadata.analysis_id,
@@ -298,6 +305,7 @@ class PcapIngestor:
                         "INGESTED",
                         metadata.ingested_at_utc,
                         metadata.ingested_at_utc,
+                        investigator_id,
                     ),
                 )
         except sqlite3.Error as exc:

@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS incidents (
     severity TEXT NOT NULL,
     confidence REAL NOT NULL,
     risk_score REAL NOT NULL,
-    status TEXT NOT NULL DEFAULT 'New',
+    status TEXT NOT NULL DEFAULT 'Open',
     alert_count INTEGER NOT NULL DEFAULT 1,
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
@@ -96,7 +96,9 @@ CREATE TABLE IF NOT EXISTS packets (
     ttl INTEGER,
     ip_version INTEGER,
     flow_id TEXT,
+    tcp_flags TEXT,
     alert_ids_json TEXT NOT NULL DEFAULT '[]',
+    incident_ids_json TEXT NOT NULL DEFAULT '[]',
     decoded_fields_json TEXT NOT NULL DEFAULT '{}',
     raw_summary TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (analysis_id) REFERENCES investigations (analysis_id) ON DELETE CASCADE,
@@ -176,9 +178,20 @@ class DatabaseManager:
             conn.close()
 
     def init_schema(self) -> None:
-        """Create tables and indexes if they do not yet exist."""
+        """Create tables and indexes and apply safe additive column migrations."""
         with self.connection() as conn:
             conn.executescript(SCHEMA_SQL)
+            self._ensure_column(conn, "investigations", "investigator_id", "TEXT DEFAULT 'analyst'")
+            self._ensure_column(conn, "investigations", "started_at", "TEXT")
+            self._ensure_column(conn, "packets", "tcp_flags", "TEXT")
+            self._ensure_column(conn, "packets", "incident_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+
+    def _ensure_column(
+        self, conn: sqlite3.Connection, table: str, column: str, col_def: str
+    ) -> None:
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table});").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def};")
 
     def check_health(self) -> bool:
         """Verify database read/write connectivity."""

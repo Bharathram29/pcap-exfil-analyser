@@ -1,6 +1,7 @@
 import type {
   AnalysisJobStatus,
   AuditLogEntry,
+  IncidentStatus,
   IntegrityVerification,
   InvestigationBundle,
   InvestigationListItem,
@@ -11,14 +12,34 @@ import type {
 } from "../types/forensics";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+const INVESTIGATOR_STORAGE_KEY = "pcap_exfil_investigator_id";
+
+export function getInvestigatorId(): string {
+  try {
+    return window.localStorage.getItem(INVESTIGATOR_STORAGE_KEY) || "analyst";
+  } catch {
+    return "analyst";
+  }
+}
+
+export function setInvestigatorId(value: string): void {
+  try {
+    const clean = value.trim() || "analyst";
+    window.localStorage.setItem(INVESTIGATOR_STORAGE_KEY, clean);
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
+}
 
 export function uploadPcapWithProgress(
   file: File,
   onProgress: (percent: number) => void,
+  investigatorId?: string,
 ): Promise<PcapUploadResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_BASE}/api/pcap/upload`);
+    xhr.setRequestHeader("X-Investigator", (investigatorId || getInvestigatorId()).trim() || "analyst");
 
     xhr.upload.onprogress = (evt) => {
       if (evt.lengthComputable && evt.total > 0) {
@@ -109,7 +130,10 @@ export async function updateAlertStatus(
     `${API_BASE}/api/analysis/${encodeURIComponent(analysisId)}/alerts/${encodeURIComponent(alertId)}`,
     {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Investigator": getInvestigatorId(),
+      },
       body: JSON.stringify({ status }),
     },
   );
@@ -122,13 +146,16 @@ export async function updateAlertStatus(
 export async function updateIncidentStatus(
   analysisId: string,
   incidentId: string,
-  status: InvestigationStatus,
+  status: IncidentStatus,
 ): Promise<void> {
   const res = await fetch(
     `${API_BASE}/api/analysis/${encodeURIComponent(analysisId)}/incidents/${encodeURIComponent(incidentId)}`,
     {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Investigator": getInvestigatorId(),
+      },
       body: JSON.stringify({ status }),
     },
   );
@@ -143,7 +170,10 @@ export interface PacketQueryParams {
   port?: string;
   protocol?: string;
   alert_id?: string;
+  incident_id?: string;
   flow_id?: string;
+  start_time?: string;
+  end_time?: string;
   search?: string;
   limit?: number;
   offset?: number;
@@ -158,7 +188,10 @@ export async function queryPackets(
   if (params.port) qs.set("port", params.port);
   if (params.protocol && params.protocol !== "ALL") qs.set("protocol", params.protocol);
   if (params.alert_id) qs.set("alert_id", params.alert_id);
+  if (params.incident_id) qs.set("incident_id", params.incident_id);
   if (params.flow_id) qs.set("flow_id", params.flow_id);
+  if (params.start_time) qs.set("start_time", params.start_time);
+  if (params.end_time) qs.set("end_time", params.end_time);
   if (params.search) qs.set("search", params.search);
   qs.set("limit", String(params.limit ?? 50));
   qs.set("offset", String(params.offset ?? 0));

@@ -35,6 +35,7 @@ class DetectionFinding:
     observation_type: str = "SUSPICIOUS_INDICATOR"
     flow_id: str | None = None
     packet_indices: list[int] = field(default_factory=list)
+    risk_score: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

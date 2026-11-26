@@ -1,19 +1,31 @@
-import React, { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Download, Search } from "lucide-react";
 import type { InvestigationBundle } from "../types/forensics";
-import { formatBytes } from "../utils/format";
+import { downloadTextFile, formatBytes, toCsv } from "../utils/format";
 
 interface FlowsAndDnsViewProps {
   bundle: InvestigationBundle;
+  focusedFlowId?: string;
   onInspectPackets: (opts: { flowId?: string; ip?: string }) => void;
 }
 
 export const FlowsAndDnsView: React.FC<FlowsAndDnsViewProps> = ({
   bundle,
+  focusedFlowId,
   onInspectPackets,
 }) => {
-  const [flowSearch, setFlowSearch] = useState("");
+  const [flowSearch, setFlowSearch] = useState(focusedFlowId ?? "");
   const [protoFilter, setProtoFilter] = useState("ALL");
+  const [page, setPage] = useState(0);
+  const pageSize = 25;
+
+  useEffect(() => {
+    if (focusedFlowId) {
+      setFlowSearch(focusedFlowId);
+      setProtoFilter("ALL");
+      setPage(0);
+    }
+  }, [focusedFlowId]);
 
   const dnsRecords = bundle.dns_analysis.records ?? [];
   const protocols = useMemo(
@@ -32,6 +44,9 @@ export const FlowsAndDnsView: React.FC<FlowsAndDnsViewProps> = ({
       return true;
     });
   }, [bundle.flows, flowSearch, protoFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredFlows.length / pageSize));
+  const pagedFlows = filteredFlows.slice(page * pageSize, (page + 1) * pageSize);
 
   const dnsFindings = bundle.active_alerts.filter((a) =>
     a.detector_types.includes("dns_tunnelling"),
@@ -56,14 +71,20 @@ export const FlowsAndDnsView: React.FC<FlowsAndDnsViewProps> = ({
               <input
                 type="text"
                 value={flowSearch}
-                onChange={(e) => setFlowSearch(e.target.value)}
+                onChange={(e) => {
+                  setFlowSearch(e.target.value);
+                  setPage(0);
+                }}
                 placeholder="Filter IP, flow ID, state..."
                 className="rounded-lg border border-slate-700 bg-slate-950 py-1.5 pl-8 pr-3 text-xs text-slate-100 placeholder-slate-500"
               />
             </div>
             <select
               value={protoFilter}
-              onChange={(e) => setProtoFilter(e.target.value)}
+              onChange={(e) => {
+                setProtoFilter(e.target.value);
+                setPage(0);
+              }}
               className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200"
             >
               <option value="ALL">All Protocols</option>
@@ -73,6 +94,33 @@ export const FlowsAndDnsView: React.FC<FlowsAndDnsViewProps> = ({
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              onClick={() => {
+                const csv = toCsv(
+                  ["Flow ID", "Initiator", "Initiator Port", "Responder", "Responder Port", "Proto", "Out Bytes", "In Bytes", "Ratio", "Bytes/s", "Conns/min", "State", "Retx Reliability"],
+                  filteredFlows.map((f) => [
+                    f.flow_id,
+                    f.initiator_ip,
+                    f.initiator_port,
+                    f.responder_ip,
+                    f.responder_port,
+                    f.application_protocol,
+                    f.bytes_initiator_to_responder,
+                    f.bytes_responder_to_initiator,
+                    f.outbound_to_inbound_ratio,
+                    f.bytes_per_second,
+                    f.connection_frequency_per_min,
+                    f.connection_state,
+                    f.retransmission_reliability,
+                  ]),
+                );
+                downloadTextFile("flows_export.csv", csv, "text/csv;charset=utf-8");
+              }}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200 hover:border-sky-500/50"
+            >
+              <Download className="h-3.5 w-3.5" /> Export CSV
+            </button>
           </div>
         </div>
 
@@ -85,13 +133,13 @@ export const FlowsAndDnsView: React.FC<FlowsAndDnsViewProps> = ({
                 <th className="px-3 py-2">Proto</th>
                 <th className="px-3 py-2">Out / In</th>
                 <th className="px-3 py-2">Ratio</th>
-                <th className="px-3 py-2">Size / IAT</th>
+                <th className="px-3 py-2">Rate / Size / IAT</th>
                 <th className="px-3 py-2">State (Basis)</th>
                 <th className="px-3 py-2">Packets</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80">
-              {filteredFlows.slice(0, 200).map((f) => (
+              {pagedFlows.map((f) => (
                 <tr key={f.flow_id} className="hover:bg-slate-800/40">
                   <td className="px-3 py-2 font-mono text-[11px] text-slate-200">
                     {f.initiator_ip}:{f.initiator_port ?? "-"}
@@ -108,16 +156,32 @@ export const FlowsAndDnsView: React.FC<FlowsAndDnsViewProps> = ({
                     {f.outbound_to_inbound_ratio !== null ? f.outbound_to_inbound_ratio : "-"}
                   </td>
                   <td className="px-3 py-2 font-mono text-[11px] text-slate-400">
-                    {f.avg_packet_size.toFixed(0)}B
-                    {f.mean_iat_seconds !== null && f.mean_iat_seconds !== undefined
-                      ? ` • ${f.mean_iat_seconds.toFixed(3)}s`
-                      : ""}
+                    <div>
+                      {f.avg_packet_size.toFixed(0)}B
+                      {f.mean_iat_seconds !== null && f.mean_iat_seconds !== undefined
+                        ? ` • ${f.mean_iat_seconds.toFixed(3)}s`
+                        : ""}
+                    </div>
+                    {(f.bytes_per_second !== undefined || f.connection_frequency_per_min !== undefined) && (
+                      <div className="text-[10px] text-slate-500">
+                        {f.bytes_per_second !== undefined ? `${formatBytes(f.bytes_per_second)}/s` : ""}
+                        {f.connection_frequency_per_min !== undefined
+                          ? ` • ${f.connection_frequency_per_min}/min`
+                          : ""}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 font-mono text-[11px] text-slate-400">
                     <div>{f.connection_state}</div>
                     {f.state_basis && (
                       <div className="text-[10px] text-slate-500">{f.state_basis}</div>
                     )}
+                    {f.retransmission_reliability &&
+                      f.retransmission_reliability !== "not_applicable" && (
+                        <div className="text-[10px] text-amber-300/80">
+                          Retx: {f.retransmission_count} ({f.retransmission_reliability})
+                        </div>
+                      )}
                   </td>
                   <td className="px-3 py-2">
                     <button
@@ -132,6 +196,29 @@ export const FlowsAndDnsView: React.FC<FlowsAndDnsViewProps> = ({
               ))}
             </tbody>
           </table>
+        </div>
+        <div className="mt-2.5 flex items-center justify-between text-xs text-slate-400">
+          <span>
+            Page {page + 1} of {totalPages} ({filteredFlows.length} flows)
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              disabled={page === 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              className="rounded border border-slate-700 p-1 hover:bg-slate-800 disabled:opacity-40"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              disabled={page + 1 >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              className="rounded border border-slate-700 p-1 hover:bg-slate-800 disabled:opacity-40"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       </div>
 

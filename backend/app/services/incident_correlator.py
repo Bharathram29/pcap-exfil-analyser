@@ -271,7 +271,7 @@ class IncidentCorrelator:
             overall_severity=overall_severity,
             overall_confidence=overall_confidence,
             risk_score=risk_score,
-            status=primary.status,
+            status="Open",
             source_hosts=src_hosts,
             destination_hosts=dst_hosts,
             source_ports=src_ports,

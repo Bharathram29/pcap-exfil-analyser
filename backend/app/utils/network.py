@@ -64,3 +64,19 @@ def classify_direction(src_ip: str | None, dst_ip: str | None) -> str:
     if src_ext and dst_ext:
         return "external"
     return "unknown"
+
+
+def is_raw_ip_host(host_header: str | None) -> bool:
+    """Return True when an HTTP Host header specifies a literal IPv4 or IPv6 address."""
+    if not host_header:
+        return False
+    host_only = host_header.strip()
+    if host_only.startswith("["):
+        host_only = host_only.split("]", 1)[0].lstrip("[")
+    elif host_only.count(":") == 1:
+        host_only = host_only.split(":", 1)[0]
+    try:
+        ipaddress.ip_address(host_only)
+        return True
+    except ValueError:
+        return False

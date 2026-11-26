@@ -154,10 +154,22 @@ class AnalysisOrchestrator:
 
         token = analysis_id_ctx.set(analysis_id)
         start_time = time.perf_counter()
+        started_at_utc = datetime.now(UTC).isoformat()
+        investigator_id = (
+            str(inv_row["investigator_id"] or "analyst")
+            if "investigator_id" in inv_row.keys()
+            else "analyst"
+        )
         audit = AuditService()
         run_id = audit.start_run(self.db, analysis_id)
-        audit.log_event(self.db, analysis_id, "ANALYSIS_STARTED", details={"run_id": run_id})
-        self._update_investigation_status(analysis_id, "PROCESSING")
+        audit.log_event(
+            self.db,
+            analysis_id,
+            "ANALYSIS_STARTED",
+            actor=investigator_id,
+            details={"run_id": run_id, "started_at_utc": started_at_utc},
+        )
+        self._update_investigation_status(analysis_id, "PROCESSING", started_at=started_at_utc)
         _report(5, "Validating capture")
 
         try:
@@ -274,10 +286,14 @@ class AnalysisOrchestrator:
             pdf_sha = compute_sha256_file(artifacts.pdf_path)
             bundle.integrity = {
                 "capture_sha256": metadata.sha256,
+                "file_size_bytes": metadata.file_size_bytes,
                 "original_capture_preserved": True,
                 "html_report_sha256": html_sha,
                 "pdf_report_sha256": pdf_sha,
                 "analysis_run_id": run_id,
+                "investigator_id": investigator_id,
+                "analysis_started_at": started_at_utc,
+                "analysis_completed_at": datetime.now(UTC).isoformat(),
             }
 
             bundle_dict = bundle.to_dict()
@@ -549,13 +565,22 @@ class AnalysisOrchestrator:
                 (analysis_id,),
             ).fetchone()
 
-    def _update_investigation_status(self, analysis_id: str, status: str) -> None:
+    def _update_investigation_status(
+        self, analysis_id: str, status: str, started_at: str | None = None
+    ) -> None:
         now = datetime.now(UTC).isoformat()
         with self.db.connection() as conn:
-            conn.execute(
-                "UPDATE investigations SET status = ?, updated_at = ? WHERE analysis_id = ?",
-                (status, now, analysis_id),
-            )
+            if started_at is not None:
+                conn.execute(
+                    "UPDATE investigations SET status = ?, started_at = ?, updated_at = ? "
+                    "WHERE analysis_id = ?",
+                    (status, started_at, now, analysis_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE investigations SET status = ?, updated_at = ? WHERE analysis_id = ?",
+                    (status, now, analysis_id),
+                )
 
     def _mark_completed(
         self, analysis_id: str, duration_ms: float, summary: dict[str, Any]

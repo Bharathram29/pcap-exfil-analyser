@@ -31,6 +31,10 @@ class PriorityBreakdown:
     risk_score: float = 0.0
     evidence_quality_score: float = 0.0
     confidence_rationale: str = ""
+    contributing_indicators: list[str] = field(default_factory=list)
+    evidence_quality: float = 0.0
+    severity_explanation: str = ""
+    score_change_reasons: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

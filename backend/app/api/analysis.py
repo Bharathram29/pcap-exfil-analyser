@@ -345,12 +345,13 @@ def update_alert_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Alert {alert_id!r} not found in analysis {analysis_id!r}.",
         )
+    actor = (request.headers.get("X-Investigator") or "analyst").strip()[:64] or "analyst"
     orch.sync_alert_status_in_bundle(analysis_id, alert_id, payload.status)
     AuditService().log_event(
         db,
         analysis_id,
         "ALERT_STATUS_UPDATED",
-        actor="analyst",
+        actor=actor,
         details={"alert_id": alert_id, "new_status": payload.status},
     )
     return AlertStatusUpdateResponse(
@@ -449,12 +450,13 @@ def update_incident_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Incident {incident_id!r} not found in analysis {analysis_id!r}.",
         )
+    actor = (request.headers.get("X-Investigator") or "analyst").strip()[:64] or "analyst"
     orch.sync_incident_status_in_bundle(analysis_id, incident_id, payload.status)
     AuditService().log_event(
         db,
         analysis_id,
         "INCIDENT_STATUS_UPDATED",
-        actor="analyst",
+        actor=actor,
         details={"incident_id": incident_id, "new_status": payload.status},
     )
     return IncidentStatusUpdateResponse(
@@ -508,6 +510,7 @@ def get_analysis_packets(
     start_time: float | None = Query(default=None),
     end_time: float | None = Query(default=None),
     alert_id: str | None = Query(default=None),
+    incident_id: str | None = Query(default=None),
     flow_id: str | None = Query(default=None),
     search: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -528,6 +531,7 @@ def get_analysis_packets(
         start_time=start_time,
         end_time=end_time,
         alert_id=alert_id,
+        incident_id=incident_id,
         flow_id=flow_id,
         search=search,
         limit=limit,
@@ -651,6 +655,7 @@ def verify_analysis_integrity(request: Request, analysis_id: str) -> dict[str, A
     result = AuditService().verify_integrity(
         stored_pcap_path=Path(inv_row["stored_path"]),
         expected_pcap_sha256=inv_row["sha256"],
+        expected_file_size_bytes=int(inv_row["file_size_bytes"]),
         html_report_path=settings.reports_dir / f"report_{analysis_id}.html",
         expected_html_sha256=integrity.get("html_report_sha256"),
         pdf_report_path=settings.reports_dir / f"report_{analysis_id}.pdf",

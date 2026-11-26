@@ -1,13 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowUpDown, ExternalLink, Filter, Layers, Search, ShieldCheck } from "lucide-react";
+import { ArrowUpDown, Download, ExternalLink, Filter, Layers, Network, Search, ShieldCheck } from "lucide-react";
 import type { InvestigationStatus, SecurityAlert } from "../types/forensics";
-import { shortTimestamp } from "../utils/format";
+import { downloadTextFile, shortTimestamp, toCsv } from "../utils/format";
 import { SeverityBadge } from "./SeverityBadge";
 
 interface AlertManagementProps {
   alerts: SecurityAlert[];
+  focusedAlertId?: string;
   onStatusChange: (alertId: string, status: InvestigationStatus) => Promise<void>;
   onInspectPackets: (opts: { alertId?: string; flowId?: string }) => void;
+  onInspectFlow?: (flowId: string) => void;
 }
 
 const STATUS_OPTIONS: InvestigationStatus[] = [
@@ -28,8 +30,10 @@ const SEV_ORDER: Record<string, number> = {
 
 export const AlertManagement: React.FC<AlertManagementProps> = ({
   alerts,
+  focusedAlertId,
   onStatusChange,
   onInspectPackets,
+  onInspectFlow,
 }) => {
   const [severityFilter, setSeverityFilter] = useState<string>("ALL");
   const [protocolFilter, setProtocolFilter] = useState<string>("ALL");
@@ -37,12 +41,16 @@ export const AlertManagement: React.FC<AlertManagementProps> = ({
   const [search, setSearch] = useState<string>("");
   const [sortBy, setSortBy] = useState<"priority" | "severity" | "timestamp" | "confidence">("priority");
   const [sortAsc, setSortAsc] = useState<boolean>(false);
-  const [selectedId, setSelectedId] = useState<string | null>(alerts[0]?.alert_id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(focusedAlertId ?? alerts[0]?.alert_id ?? null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
 
   useEffect(() => {
-    setSelectedId(alerts[0]?.alert_id ?? null);
-  }, [alerts]);
+    if (focusedAlertId && alerts.some((a) => a.alert_id === focusedAlertId)) {
+      setSelectedId(focusedAlertId);
+    } else {
+      setSelectedId((prev) => (prev && alerts.some((a) => a.alert_id === prev) ? prev : alerts[0]?.alert_id ?? null));
+    }
+  }, [alerts, focusedAlertId]);
 
   const protocols = useMemo(
     () => Array.from(new Set(alerts.map((a) => a.protocol))).sort(),
@@ -147,6 +155,44 @@ export const AlertManagement: React.FC<AlertManagementProps> = ({
           />
           Show Allowlisted / Suppressed
         </label>
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              const csv = toCsv(
+                ["Alert ID", "Title", "Severity", "Risk Score", "Confidence", "Protocol", "Src IP", "Dst IP", "Dst Port", "Incident ID", "Suppressed", "Status"],
+                filtered.map((a) => [
+                  a.alert_id,
+                  a.title,
+                  a.severity,
+                  a.risk_score ?? a.priority_score,
+                  a.confidence,
+                  a.protocol,
+                  a.source_ip,
+                  a.destination_ip,
+                  a.destination_port,
+                  a.incident_id,
+                  a.suppressed,
+                  a.status,
+                ]),
+              );
+              downloadTextFile("alerts_export.csv", csv, "text/csv;charset=utf-8");
+            }}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] text-slate-200 hover:border-sky-500/50"
+          >
+            <Download className="h-3 w-3" /> CSV
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              downloadTextFile("alerts_export.json", JSON.stringify(filtered, null, 2), "application/json")
+            }
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] text-slate-200 hover:border-sky-500/50"
+          >
+            <Download className="h-3 w-3" /> JSON
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-5">
@@ -307,23 +353,59 @@ export const AlertManagement: React.FC<AlertManagementProps> = ({
                   <Layers className="h-3.5 w-3.5" />
                   Inspect Supporting Packets ({selectedAlert.packet_indices?.length ?? 0} refs)
                 </button>
+                {selectedAlert.flow_id && onInspectFlow && (
+                  <button
+                    type="button"
+                    onClick={() => onInspectFlow(selectedAlert.flow_id!)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-300 hover:bg-cyan-500/20"
+                  >
+                    <Network className="h-3.5 w-3.5" />
+                    Inspect Flow ({selectedAlert.flow_id})
+                  </button>
+                )}
               </div>
 
-              <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
-                <div className="mb-1.5 flex items-center justify-between font-semibold text-slate-200">
-                  <span>Explainable Risk &amp; Confidence Score</span>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 space-y-1.5">
+                <div className="flex items-center justify-between font-semibold text-slate-200">
+                  <span>Calibrated Risk &amp; Evidence Confidence</span>
                   <span className="font-mono text-sky-400">
-                    Risk {selectedAlert.priority_score} / 100 • Conf {Math.round(selectedAlert.confidence * 100)}%
+                    Risk {(selectedAlert.priority_breakdown.risk_score ?? selectedAlert.priority_score).toFixed(1)} / 100 • Conf {Math.round(selectedAlert.confidence * 100)}%
                   </span>
                 </div>
                 <p className="font-mono text-[11px] text-slate-400">
                   {selectedAlert.priority_breakdown.rationale}
                 </p>
+                {selectedAlert.priority_breakdown.severity_explanation && (
+                  <p className="text-[11px] text-amber-300/90">
+                    {selectedAlert.priority_breakdown.severity_explanation}
+                  </p>
+                )}
                 {selectedAlert.priority_breakdown.confidence_rationale && (
-                  <p className="mt-1 font-mono text-[11px] text-emerald-400/90">
+                  <p className="font-mono text-[11px] text-emerald-400/90">
                     {selectedAlert.priority_breakdown.confidence_rationale}
                   </p>
                 )}
+                {selectedAlert.priority_breakdown.contributing_indicators &&
+                  selectedAlert.priority_breakdown.contributing_indicators.length > 0 && (
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {selectedAlert.priority_breakdown.contributing_indicators.map((ind) => (
+                        <span
+                          key={ind}
+                          className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] text-slate-300"
+                        >
+                          {ind}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                {selectedAlert.priority_breakdown.score_change_reasons &&
+                  selectedAlert.priority_breakdown.score_change_reasons.length > 0 && (
+                    <ul className="list-disc pl-4 text-[10px] text-slate-400">
+                      {selectedAlert.priority_breakdown.score_change_reasons.map((r, i) => (
+                        <li key={i}>{r}</li>
+                      ))}
+                    </ul>
+                  )}
               </div>
 
               {selectedAlert.mitre_mappings.length > 0 && (

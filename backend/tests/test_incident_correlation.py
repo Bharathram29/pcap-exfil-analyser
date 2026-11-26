@@ -166,6 +166,13 @@ def test_incidents_api_endpoints_e2e(tmp_path: Path) -> None:
             i for i in inc_data["incidents"] if "203.0.113.75" in i["destination_hosts"]
         )
         assert exfil_inc["alert_count"] >= 2
+        assert exfil_inc["status"] == "Open"
+
+        summary = client.get(f"/api/analysis/{analysis_id}/summary").json()["summary"]
+        assert summary["total_alerts"] >= summary["suspicious_events"]
+        assert summary["correlated_incidents"] == inc_data["total"]
+        assert summary["active_incidents"] == inc_data["active_count"]
+        assert summary["allowlisted_alerts"] == summary["suppressed_events"]
 
         detail_resp = client.get(
             f"/api/analysis/{analysis_id}/incidents/{exfil_inc['incident_id']}"
@@ -175,7 +182,7 @@ def test_incidents_api_endpoints_e2e(tmp_path: Path) -> None:
 
         patch_resp = client.patch(
             f"/api/analysis/{analysis_id}/incidents/{exfil_inc['incident_id']}",
-            json={"status": "Confirmed Suspicious"},
+            json={"status": "Resolved"},
         )
         assert patch_resp.status_code == 200
-        assert patch_resp.json()["status"] == "Confirmed Suspicious"
+        assert patch_resp.json()["status"] == "Resolved"

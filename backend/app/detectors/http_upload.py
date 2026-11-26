@@ -3,23 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 from collections import defaultdict
 
 from app.detectors.base import BaseDetector
 from app.models.detection import DetectionContext, DetectionFinding
 from app.models.packet import NormalizedPacket
-
-
-def _is_raw_ip_host(host_header: str | None) -> bool:
-    if not host_header:
-        return False
-    host_only = host_header.split(":", 1)[0].strip("[]")
-    try:
-        ipaddress.ip_address(host_only)
-        return True
-    except ValueError:
-        return False
+from app.utils.network import is_raw_ip_host as _is_raw_ip_host
 
 
 class HttpUploadDetector(BaseDetector):
@@ -32,6 +21,7 @@ class HttpUploadDetector(BaseDetector):
             defaultdict(list)
         )
         resp_bytes_by_pair: dict[tuple[str | None, str | None], int] = defaultdict(int)
+        resp_codes_by_pair: dict[tuple[str | None, str | None], list[int]] = defaultdict(list)
 
         for pkt in context.packets:
             if pkt.http is None:
@@ -41,11 +31,23 @@ class HttpUploadDetector(BaseDetector):
             else:
                 resp_bytes = max(pkt.http.payload_size, pkt.http.content_length or 0)
                 resp_bytes_by_pair[(pkt.dst_ip, pkt.src_ip)] += resp_bytes
+                if pkt.http.status_code is not None:
+                    resp_codes_by_pair[(pkt.dst_ip, pkt.src_ip)].append(pkt.http.status_code)
+
+        flow_out_by_target: dict[tuple[str, str, int | None], int] = defaultdict(int)
+        for flow in context.flows:
+            flow_out_by_target[(flow.initiator_ip, flow.responder_ip, flow.responder_port)] += (
+                flow.bytes_initiator_to_responder
+            )
 
         findings: list[DetectionFinding] = []
         for (src_ip, dst_ip, dst_port), pkts in sorted(req_grouped.items()):
             resp_bytes = resp_bytes_by_pair.get((src_ip, dst_ip), 0)
-            finding = self._evaluate_http_target(src_ip, dst_ip, dst_port, pkts, resp_bytes)
+            resp_codes = resp_codes_by_pair.get((src_ip, dst_ip), [])
+            flow_out = flow_out_by_target.get((src_ip or "", dst_ip or "", dst_port), 0)
+            finding = self._evaluate_http_target(
+                src_ip, dst_ip, dst_port, pkts, resp_bytes, resp_codes, flow_out
+            )
             if finding is not None:
                 findings.append(finding)
         return findings
@@ -57,6 +59,8 @@ class HttpUploadDetector(BaseDetector):
         dst_port: int | None,
         pkts: list[NormalizedPacket],
         total_response_bytes: int,
+        response_status_codes: list[int],
+        flow_observed_outbound_bytes: int,
     ) -> DetectionFinding | None:
         cfg = self.config
         ordered = sorted(pkts, key=lambda p: p.timestamp)
@@ -216,7 +220,9 @@ class HttpUploadDetector(BaseDetector):
                 "upload_request_count": len(upload_pkts),
                 "max_payload_bytes": max_payload,
                 "total_upload_bytes": total_upload_bytes,
+                "flow_observed_outbound_bytes": flow_observed_outbound_bytes,
                 "total_response_bytes": total_response_bytes,
+                "response_status_codes": response_status_codes[:20],
                 "requests_per_minute": req_per_min,
                 "destination_port": dst_port,
                 "user_agents": user_agents,
