@@ -193,7 +193,9 @@ class IncidentCorrelator:
             for a in ordered
         )
         first_seen = min(ordered, key=lambda a: a.timestamp_epoch).timestamp
-        last_seen = datetime.fromtimestamp(last_epoch, tz=UTC).isoformat()
+        last_seen = datetime.fromtimestamp(last_epoch, tz=UTC).isoformat(
+            timespec="microseconds"
+        )
 
         # Overall confidence reflects strongest evidence without artificial inflation
         overall_confidence = round(max(a.confidence for a in ordered), 2)
@@ -271,7 +273,7 @@ class IncidentCorrelator:
             overall_severity=overall_severity,
             overall_confidence=overall_confidence,
             risk_score=risk_score,
-            status="Open",
+            status="Resolved" if all_suppressed else "Open",
             source_hosts=src_hosts,
             destination_hosts=dst_hosts,
             source_ports=src_ports,

@@ -25,7 +25,7 @@ export function severityClasses(severity: Severity | string): string {
 
 export function shortTimestamp(utcIso: string): string {
   if (!utcIso) return "-";
-  return utcIso.replace("T", " ").replace("+00:00", " UTC").slice(0, 23);
+  return utcIso.replace("T", " ").replace("+00:00", " UTC");
 }
 
 export function downloadTextFile(filename: string, content: string, mimeType: string): void {

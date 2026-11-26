@@ -48,3 +48,4 @@ class DetectionContext:
     metadata: CaptureMetadata
     packets: list[NormalizedPacket]
     flows: list[NetworkFlow]
+    packet_flow_map: dict[int, str] = field(default_factory=dict)

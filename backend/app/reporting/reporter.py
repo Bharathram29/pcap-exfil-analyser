@@ -97,7 +97,45 @@ class ForensicReporter:
             limitations=d.get("limitations", []),
             threat_intelligence=d.get("threat_intelligence", {}),
             integrity=d.get("integrity", {}),
+            packet_flow_map=d.get("packet_flow_map", {}),
         )
+
+    @staticmethod
+    def _fmt_score(val: Any) -> str:
+        num = round(float(val or 0.0), 2)
+        return f"{num:.2f}".rstrip("0").rstrip(".") or "0"
+
+    @staticmethod
+    def _compute_report_counts(bundle: InvestigationBundle) -> dict[str, int]:
+        alerts = list(getattr(bundle, "alerts", []))
+        active_alerts = [a for a in alerts if not getattr(a, "suppressed", False)]
+        suppressed_alerts = [a for a in alerts if getattr(a, "suppressed", False)]
+        incidents = list(getattr(bundle, "incidents", []))
+        active_incidents = [
+            inc
+            for inc in incidents
+            if not getattr(inc, "suppressed", False)
+            and getattr(inc, "status", "Open") not in {"Resolved", "Closed"}
+        ]
+        allowlisted_incidents = [inc for inc in incidents if getattr(inc, "suppressed", False)]
+        s = bundle.summary
+        return {
+            "total_packets": int(s.get("total_packets", 0)),
+            "total_flows": int(s.get("total_flows", len(getattr(bundle, "flows", [])))),
+            "unique_source_ips": int(s.get("unique_source_ips", 0)),
+            "unique_destination_ips": int(s.get("unique_destination_ips", 0)),
+            "total_alerts": len(alerts),
+            "active_alerts": len(active_alerts),
+            "allowlisted_alerts": len(suppressed_alerts),
+            "correlated_incidents": len(incidents),
+            "active_incidents": len(active_incidents),
+            "allowlisted_incidents": len(allowlisted_incidents),
+            "critical_alerts": sum(1 for a in active_alerts if a.severity == "CRITICAL"),
+            "high_alerts": sum(1 for a in active_alerts if a.severity == "HIGH"),
+            "medium_alerts": sum(1 for a in active_alerts if a.severity == "MEDIUM"),
+            "low_alerts": sum(1 for a in active_alerts if a.severity == "LOW"),
+            "mitre_count": len(getattr(bundle, "mitre_mappings", [])),
+        }
 
     def generate_html(self, bundle: InvestigationBundle) -> Path:
         """Render a standalone HTML report with all untrusted strings escaped."""
@@ -140,6 +178,7 @@ class ForensicReporter:
             if "network_beaconing" in getattr(a, "detector_types", [])
         ]
         packet_evidence_rows = self._collect_packet_evidence_rows(bundle)
+        report_counts = self._compute_report_counts(bundle)
 
         template = self.jinja_env.get_template("report.html.j2")
         html_content = template.render(
@@ -150,6 +189,8 @@ class ForensicReporter:
             specialized_alerts=specialized_alerts,
             beaconing_alerts=beaconing_alerts,
             packet_evidence_rows=packet_evidence_rows,
+            report_counts=report_counts,
+            fmt_score=self._fmt_score,
         )
         out_path.write_text(html_content, encoding="utf-8")
         return out_path
@@ -231,25 +272,20 @@ class ForensicReporter:
         # 2. Executive Summary
         story.append(p("2. Executive Summary", h2_style))
         s = bundle.summary
-        total_alerts_n = s.get("total_alerts", len(bundle.alerts))
-        allow_alerts_n = s.get("allowlisted_alerts", s["suppressed_events"])
-        corr_inc_n = s.get("correlated_incidents", len(getattr(bundle, "incidents", [])))
-        active_inc_n = s.get("active_incidents", len(getattr(bundle, "active_incidents", [])))
-        allow_inc_n = s.get(
-            "allowlisted_incidents", len(getattr(bundle, "suppressed_incidents", []))
-        )
+        rc = self._compute_report_counts(bundle)
         story.append(
             p(
-                f"Analysed {s['total_packets']:,} packets across {s['total_flows']:,} flows "
-                f"({s['unique_source_ips']} unique source IPs, "
-                f"{s['unique_destination_ips']} unique destination IPs). "
-                f"Total alerts: {total_alerts_n} ({s['suspicious_events']} active, "
-                f"{allow_alerts_n} allowlisted). Correlated incidents: {corr_inc_n} "
-                f"({active_inc_n} active, {allow_inc_n} allowlisted). "
-                f"Active severity breakdown: {s['critical_alerts']} Critical, "
-                f"{s['high_alerts']} High, {s['medium_alerts']} Medium, "
-                f"{s['low_alerts']} Low; mapped to {len(bundle.mitre_mappings)} "
-                f"MITRE ATT&CK technique(s)."
+                f"Analysed {rc['total_packets']:,} packets across {rc['total_flows']:,} flows "
+                f"({rc['unique_source_ips']} unique source IPs, "
+                f"{rc['unique_destination_ips']} unique destination IPs). "
+                f"Total alerts: {rc['total_alerts']} ({rc['active_alerts']} active, "
+                f"{rc['allowlisted_alerts']} allowlisted). "
+                f"Correlated incidents: {rc['correlated_incidents']} "
+                f"({rc['active_incidents']} active, {rc['allowlisted_incidents']} allowlisted). "
+                f"Active severity breakdown: {rc['critical_alerts']} Critical, "
+                f"{rc['high_alerts']} High, {rc['medium_alerts']} Medium, "
+                f"{rc['low_alerts']} Low; mapped to {rc['mitre_count']} "
+                "MITRE ATT&CK technique(s)."
             )
         )
         story.append(
@@ -298,18 +334,18 @@ class ForensicReporter:
                 p("Incident Title & Hosts", cell_style),
             ]
         ]
-        for inc in getattr(bundle, "incidents", [])[:30]:
-            tag = " [ALLOWLISTED]" if getattr(inc, "suppressed", False) else ""
+        for inc in getattr(bundle, "incidents", [])[:200]:
+            tag = " [Allowlisted]" if getattr(inc, "suppressed", False) else ""
             title_hosts = (
                 f"{inc.incident_title}{tag} | "
                 f"{', '.join(inc.source_hosts)} -> {', '.join(inc.destination_hosts)} "
                 f"({inc.alert_count} alerts, {len(inc.packet_indices)} pkt refs)"
             )
             inc_rows.append([
-                p(f"{inc.incident_id} ({inc.status})", cell_style),
+                p(f"{inc.incident_id}\nStatus: {inc.status}", cell_style),
                 p(inc.overall_severity, cell_style),
-                p(f"{inc.risk_score:.1f}", cell_style),
-                p(f"{int(inc.overall_confidence * 100)}%", cell_style),
+                p(self._fmt_score(inc.risk_score), cell_style),
+                p(f"{int(round(inc.overall_confidence * 100))}%", cell_style),
                 p(title_hosts, cell_style),
             ])
         if len(inc_rows) == 1:
@@ -371,10 +407,17 @@ class ForensicReporter:
 
         # 7. Detected Suspicious Events & Risk Explanations
         story.append(p("7. Individual Suspicious Events, Risk Scoring & Packet Refs", h2_style))
-        alert_rows = [[p("Sev", cell_style), p("Risk / Conf", cell_style), p("Title", cell_style),
-                       p("Endpoints & Pkts", cell_style), p("Explanation & Rationale", cell_style)]]
-        for a in bundle.alerts[:40]:
-            title_txt = f"{a.title}{' [ALLOWLISTED]' if a.suppressed else ''}"
+        alert_rows = [
+            [
+                p("Sev", cell_style),
+                p("Risk / Conf", cell_style),
+                p("Title & Status", cell_style),
+                p("Endpoints & Pkts", cell_style),
+                p("Explanation & Rationale", cell_style),
+            ]
+        ]
+        for a in bundle.alerts[:200]:
+            title_txt = f"{a.title}{' [Allowlisted]' if a.suppressed else ''} [Status: {a.status}]"
             pkt_refs = ", ".join(str(x) for x in getattr(a, "packet_indices", [])[:8]) or "-"
             ep_txt = (
                 f"{a.source_ip or '-'} -> {a.destination_ip or '-'}:{a.destination_port or '-'} "
@@ -384,10 +427,14 @@ class ForensicReporter:
             risk_v = getattr(a.priority_breakdown, "risk_score", None) or a.priority_score
             alert_rows.append([
                 p(a.severity, cell_style),
-                p(f"Risk: {float(risk_v):.1f}\nConf: {int(a.confidence * 100)}%", cell_style),
+                p(
+                    f"Risk: {self._fmt_score(risk_v)}\n"
+                    f"Conf: {int(round(a.confidence * 100))}%",
+                    cell_style,
+                ),
                 p(title_txt, cell_style),
                 p(ep_txt, cell_style),
-                p(f"{a.explanation[:150]} | {rationale[:100]}", cell_style),
+                p(f"{a.explanation[:180]} | {rationale[:110]}", cell_style),
             ])
         if len(alert_rows) == 1:
             alert_rows.append([p("-", cell_style), p("-", cell_style),
@@ -395,13 +442,13 @@ class ForensicReporter:
         story.append(
             self._styled_table(
                 alert_rows,
-                [0.7 * inch, 0.7 * inch, 1.5 * inch, 1.6 * inch, 2.7 * inch],
+                [0.7 * inch, 0.75 * inch, 1.5 * inch, 1.55 * inch, 2.7 * inch],
                 has_header=True,
             )
         )
-        if len(bundle.alerts) > 40:
+        if len(bundle.alerts) > 200:
             story.append(
-                p(f"Note: Showing top 40 of {len(bundle.alerts)} alerts in PDF summary; "
+                p(f"Note: Showing top 200 of {len(bundle.alerts)} alerts in PDF summary; "
                   "full alert list is preserved in the HTML report and JSON bundle.")
             )
 
@@ -449,13 +496,13 @@ class ForensicReporter:
         # 10. Structured Packet-Level Evidence Reference Table
         story.append(p("10. Packet-Level Forensic Evidence References", h2_style))
         pkt_ev_rows = self._collect_packet_evidence_rows(bundle)
-        pkt_table_rows = [[p("Pkt #", cell_style), p("UTC Time", cell_style),
+        pkt_table_rows = [[p("Pkt #", cell_style), p("UTC Time (Full Precision)", cell_style),
                            p("Src -> Dst", cell_style), p("Proto", cell_style),
                            p("Flow / Incident / Alert", cell_style)]]
-        for row in pkt_ev_rows[:25]:
+        for row in pkt_ev_rows[:35]:
             pkt_table_rows.append([
                 p(str(row["packet_index"]), cell_style),
-                p(str(row["timestamp"])[:22], cell_style),
+                p(str(row["timestamp"]), cell_style),
                 p(f"{row['src']} -> {row['dst']}", cell_style),
                 p(str(row["protocol"]), cell_style),
                 p(f"{row['context']} ({row['ref_id']})", cell_style),
@@ -467,7 +514,7 @@ class ForensicReporter:
         story.append(
             self._styled_table(
                 pkt_table_rows,
-                [0.65 * inch, 1.45 * inch, 2.0 * inch, 0.7 * inch, 2.4 * inch],
+                [0.5 * inch, 1.9 * inch, 1.85 * inch, 0.6 * inch, 2.35 * inch],
                 has_header=True,
             )
         )
@@ -486,16 +533,36 @@ class ForensicReporter:
     def _collect_packet_evidence_rows(
         self, bundle: InvestigationBundle
     ) -> list[dict[str, Any]]:
-        """Collect structured packet-level evidence rows from alerts and protocol records."""
+        """Collect structured packet-level evidence rows with reliable packet-to-flow linking."""
+        pkt_to_flow: dict[int, str] = {}
+        raw_pfm = getattr(bundle, "packet_flow_map", {}) or {}
+        if isinstance(raw_pfm, dict):
+            for k, v in raw_pfm.items():
+                if isinstance(v, str) and v:
+                    try:
+                        pkt_to_flow[int(k)] = v
+                    except (TypeError, ValueError):
+                        pass
+        for flow in getattr(bundle, "flows", []):
+            fid = getattr(flow, "flow_id", None)
+            if not fid:
+                continue
+            for pidx in getattr(flow, "packet_indices", []):
+                if isinstance(pidx, int):
+                    pkt_to_flow.setdefault(pidx, fid)
+
         rows: list[dict[str, Any]] = []
         seen_keys: set[tuple[int, str]] = set()
-        for a in getattr(bundle, "alerts", [])[:25]:
+        for a in getattr(bundle, "alerts", [])[:40]:
             pkt_idxs = list(getattr(a, "packet_indices", []) or [])
             for pidx in pkt_idxs[:4]:
                 key = (int(pidx), a.alert_id)
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
+                resolved_flow = pkt_to_flow.get(int(pidx)) or getattr(a, "flow_id", None)
+                flow_lbl = resolved_flow if resolved_flow else "null"
+                inc_lbl = getattr(a, "incident_id", None) or "null"
                 rows.append(
                     {
                         "packet_index": pidx,
@@ -503,11 +570,9 @@ class ForensicReporter:
                         "src": f"{a.source_ip or '-'}:{a.source_port or '-'}",
                         "dst": f"{a.destination_ip or '-'}:{a.destination_port or '-'}",
                         "protocol": a.protocol,
+                        "flow_id": resolved_flow,
                         "context": a.title[:60],
-                        "ref_id": (
-                            f"inc={a.incident_id or '-'} | "
-                            f"flow={a.flow_id or '-'} | alert={a.alert_id}"
-                        ),
+                        "ref_id": f"inc={inc_lbl} | flow={flow_lbl} | alert={a.alert_id}",
                     }
                 )
         for rec in bundle.dns_analysis.get("records", [])[:15]:
@@ -516,6 +581,8 @@ class ForensicReporter:
             pidx = rec.get("packet_index")
             if pidx is None:
                 continue
+            resolved_flow = pkt_to_flow.get(int(pidx))
+            flow_lbl = resolved_flow if resolved_flow else "null"
             rows.append(
                 {
                     "packet_index": pidx,
@@ -523,8 +590,9 @@ class ForensicReporter:
                     "src": rec.get("src_ip") or "-",
                     "dst": rec.get("dst_ip") or "-",
                     "protocol": f"DNS/{rec.get('query_type') or 'Q'}",
+                    "flow_id": resolved_flow,
                     "context": str(rec.get("query_name") or "-")[:60],
-                    "ref_id": "dns_record",
+                    "ref_id": f"flow={flow_lbl} | dns_record",
                 }
             )
         return rows[:35]

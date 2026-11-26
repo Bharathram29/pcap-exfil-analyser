@@ -172,7 +172,7 @@ class YamlRuleEngine:
         if rule.protocol == "FLOW":
             return self._evaluate_flow_rule(rule, context.flows)
         if rule.protocol in {"HTTP", "DNS", "TLS", "ICMP"}:
-            return self._evaluate_packet_rule(rule, context.packets)
+            return self._evaluate_packet_rule(rule, context)
         # TCP / UDP / ANY: evaluate flows first if condition has flow keys, else packets
         if any(
             k in rule.condition
@@ -187,17 +187,24 @@ class YamlRuleEngine:
             )
         ):
             return self._evaluate_flow_rule(rule, context.flows)
-        return self._evaluate_packet_rule(rule, context.packets)
+        return self._evaluate_packet_rule(rule, context)
 
     def _evaluate_packet_rule(
         self,
         rule: DetectionRuleSchema,
-        packets: list[NormalizedPacket],
+        context: DetectionContext,
     ) -> list[DetectionFinding]:
+        pkt_flow_map = dict(context.packet_flow_map)
+        if not pkt_flow_map:
+            for flow in context.flows:
+                for pidx in flow.packet_indices:
+                    pkt_flow_map.setdefault(pidx, flow.flow_id)
+        flow_by_id = {flow.flow_id: flow for flow in context.flows}
+
         matched_groups: dict[tuple[str | None, str | None, int | None], list[NormalizedPacket]] = (
             defaultdict(list)
         )
-        for pkt in packets:
+        for pkt in context.packets:
             if not self._packet_matches_protocol(pkt, rule.protocol):
                 continue
             attrs = self._packet_attributes(pkt)
@@ -207,12 +214,47 @@ class YamlRuleEngine:
         findings: list[DetectionFinding] = []
         for (src_ip, dst_ip, dst_port), pkts in sorted(matched_groups.items()):
             earliest = min(pkts, key=lambda p: p.timestamp)
+            matched_fids = sorted(
+                {pkt_flow_map[p.packet_index] for p in pkts if p.packet_index in pkt_flow_map}
+            )
+            primary_flow_id = matched_fids[0] if len(matched_fids) == 1 else None
             det_hash = hashlib.sha256(
                 f"yaml:{rule.id}:{src_ip}:{dst_ip}:{dst_port}".encode()
             ).hexdigest()[:12]
             steps = rule.recommended_steps or [
                 f"Validate traffic matching {rule.id} ({rule.name}) from {src_ip} to {dst_ip}."
             ]
+            evidence_dict: dict[str, Any] = {
+                "rule_id": rule.id,
+                "matched_packet_count": len(pkts),
+                "condition": rule.condition,
+                "operator": rule.operator,
+                "flow_ids": matched_fids,
+                "sample_packet_indices": [p.packet_index for p in pkts[:15]],
+                "sample_attributes": self._packet_attributes(earliest),
+            }
+            explanation = f"[{rule.id}] {rule.description}"
+            if rule.protocol == "HTTP":
+                declared_http_bytes = sum(
+                    max(p.http.payload_size, p.http.content_length or 0)
+                    for p in pkts
+                    if p.http
+                )
+                captured_http_bytes = sum(p.http.payload_size for p in pkts if p.http)
+                flow_wire_out = sum(
+                    flow_by_id[fid].bytes_initiator_to_responder
+                    for fid in matched_fids
+                    if fid in flow_by_id
+                )
+                evidence_dict["http_declared_body_bytes"] = declared_http_bytes
+                evidence_dict["http_captured_body_bytes"] = captured_http_bytes
+                evidence_dict["flow_observed_outbound_bytes"] = flow_wire_out
+                explanation = (
+                    f"[{rule.id}] {rule.description} Matched {len(pkts)} HTTP packet(s) "
+                    f"(HTTP body declared={declared_http_bytes:,} B, captured segment payload="
+                    f"{captured_http_bytes:,} B; "
+                    f"flow-observed network outbound={flow_wire_out:,} B)."
+                )
             findings.append(
                 DetectionFinding(
                     detection_id=f"det-rule-{det_hash}",
@@ -227,17 +269,11 @@ class YamlRuleEngine:
                     source_port=earliest.src_port,
                     destination_port=dst_port,
                     protocol=earliest.protocol,
+                    flow_id=primary_flow_id,
                     rule_id=rule.id,
                     packet_indices=[p.packet_index for p in pkts[:200]],
-                    evidence={
-                        "rule_id": rule.id,
-                        "matched_packet_count": len(pkts),
-                        "condition": rule.condition,
-                        "operator": rule.operator,
-                        "sample_packet_indices": [p.packet_index for p in pkts[:15]],
-                        "sample_attributes": self._packet_attributes(earliest),
-                    },
-                    explanation=f"[{rule.id}] {rule.description}",
+                    evidence=evidence_dict,
+                    explanation=explanation,
                     recommended_investigation_steps=steps,
                     candidate_mitre_ids=rule.resolved_mitre_ids(),
                 )

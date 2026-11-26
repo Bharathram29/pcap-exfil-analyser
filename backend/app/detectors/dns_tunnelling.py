@@ -38,7 +38,9 @@ class DnsTunnellingDetector(BaseDetector):
         findings: list[DetectionFinding] = []
         for (src_ip, dst_ip, parent), pkts in sorted(queries.items()):
             resp_pkts = responses.get((src_ip, dst_ip, parent), [])
-            finding = self._evaluate_domain_group(src_ip, dst_ip, parent, pkts, resp_pkts)
+            finding = self._evaluate_domain_group(
+                src_ip, dst_ip, parent, pkts, resp_pkts, context
+            )
             if finding is not None:
                 findings.append(finding)
         return findings
@@ -50,6 +52,7 @@ class DnsTunnellingDetector(BaseDetector):
         parent: str,
         pkts: list[NormalizedPacket],
         resp_pkts: list[NormalizedPacket],
+        context: DetectionContext | None = None,
     ) -> DetectionFinding | None:
         cfg = self.config
         ordered = sorted(pkts, key=lambda p: p.timestamp)
@@ -234,6 +237,9 @@ class DnsTunnellingDetector(BaseDetector):
             :8
         ]
         pkt_indices = sorted({p.packet_index for p in [*ordered[:200], *resp_pkts[:100]]})
+        pkt_flow_map = context.packet_flow_map if context else {}
+        matched_fids = sorted({pkt_flow_map[i] for i in pkt_indices if i in pkt_flow_map})
+        primary_flow_id = matched_fids[0] if len(matched_fids) == 1 else None
         det_hash = hashlib.sha256(f"dns_tunnel:{src_ip}:{parent}".encode()).hexdigest()[:12]
 
         return DetectionFinding(
@@ -249,9 +255,11 @@ class DnsTunnellingDetector(BaseDetector):
             source_port=first_pkt.src_port,
             destination_port=first_pkt.dst_port or 53,
             protocol="DNS",
+            flow_id=primary_flow_id,
             packet_indices=pkt_indices,
             evidence={
                 "parent_domain": parent,
+                "flow_ids": matched_fids,
                 "query_count": query_count,
                 "response_count": len(resp_pkts),
                 "matched_response_count": matched_resps,

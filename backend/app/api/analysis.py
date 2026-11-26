@@ -398,7 +398,11 @@ def get_analysis_incidents(
     return {
         "analysis_id": analysis_id,
         "total": len(incidents),
-        "active_count": sum(1 for i in incidents if not i.get("suppressed")),
+        "active_count": sum(
+            1
+            for i in incidents
+            if not i.get("suppressed") and i.get("status") not in {"Resolved", "Closed"}
+        ),
         "suppressed_count": sum(1 for i in incidents if i.get("suppressed")),
         "incidents": incidents,
     }

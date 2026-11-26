@@ -45,6 +45,7 @@ class InvestigationBundle:
     limitations: list[str] = field(default_factory=list)
     threat_intelligence: dict[str, Any] = field(default_factory=dict)
     integrity: dict[str, Any] = field(default_factory=dict)
+    packet_flow_map: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +74,7 @@ class InvestigationBundle:
             "limitations": self.limitations,
             "threat_intelligence": self.threat_intelligence,
             "integrity": self.integrity,
+            "packet_flow_map": self.packet_flow_map,
         }
 
 
@@ -230,6 +232,18 @@ def build_investigation_bundle(
         ),
     ]
 
+    referenced_pkts: set[int] = set()
+    for a in alert_result.alerts:
+        referenced_pkts.update(a.packet_indices)
+    for rec in dns_analysis.get("records", []):
+        if isinstance(rec, dict) and isinstance(rec.get("packet_index"), int):
+            referenced_pkts.add(rec["packet_index"])
+    pkt_flow_refs = {
+        str(pidx): flow_result.packet_flow_map[pidx]
+        for pidx in sorted(referenced_pkts)
+        if pidx in flow_result.packet_flow_map
+    }
+
     return InvestigationBundle(
         analysis_id=metadata.analysis_id,
         status=status,
@@ -254,6 +268,7 @@ def build_investigation_bundle(
         mitre_mappings=alert_result.mitre_summary,
         timeline=alert_result.timeline,
         limitations=limitations,
+        packet_flow_map=pkt_flow_refs,
     )
 
 

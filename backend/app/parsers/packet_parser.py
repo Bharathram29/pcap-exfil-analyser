@@ -127,10 +127,14 @@ class PacketParser:
 
         try:
             timestamp = float(pkt.time)
-            timestamp_utc = datetime.fromtimestamp(timestamp, tz=UTC).isoformat()
+            timestamp_utc = datetime.fromtimestamp(timestamp, tz=UTC).isoformat(
+                timespec="microseconds"
+            )
         except Exception:
             timestamp = 0.0
-            timestamp_utc = datetime.fromtimestamp(0.0, tz=UTC).isoformat()
+            timestamp_utc = datetime.fromtimestamp(0.0, tz=UTC).isoformat(
+                timespec="microseconds"
+            )
             missing_fields.append("timestamp")
         length = len(pkt)
 

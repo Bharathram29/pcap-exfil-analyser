@@ -207,6 +207,7 @@ class AnalysisOrchestrator:
                 metadata=metadata,
                 packets=parsed.packets,
                 flows=flow_result.flows,
+                packet_flow_map=flow_result.packet_flow_map,
             )
 
             _report(60, "Running heuristic & YAML detections")
@@ -219,13 +220,27 @@ class AnalysisOrchestrator:
             yaml_findings = YamlRuleEngine().evaluate(context, rules_path=rules_path)
             all_findings = heuristic_findings + yaml_findings
 
-            # Backfill packet_indices from flow_map for any finding referencing a flow
+            # Backfill packet_indices from flows and flow_id/flow_ids from packet_flow_map
             flow_by_id = {f.flow_id: f for f in flow_result.flows}
+            pkt_flow_map = flow_result.packet_flow_map
             for finding in all_findings:
                 if not finding.packet_indices and finding.flow_id and finding.flow_id in flow_by_id:
                     finding.packet_indices = list(flow_by_id[finding.flow_id].packet_indices[:200])
                 if finding.packet_indices and "packet_indices" not in finding.evidence:
                     finding.evidence["packet_indices"] = list(finding.packet_indices[:100])
+                matched_fids = sorted(
+                    {
+                        pkt_flow_map[pidx]
+                        for pidx in finding.packet_indices
+                        if pidx in pkt_flow_map
+                    }
+                )
+                if matched_fids:
+                    existing_fids = list(finding.evidence.get("flow_ids") or [])
+                    merged_fids = sorted(set(existing_fids) | set(matched_fids))
+                    finding.evidence["flow_ids"] = merged_fids
+                    if finding.flow_id is None and len(merged_fids) == 1:
+                        finding.flow_id = merged_fids[0]
 
             allowlist_path = self.settings.rules_dir / "allowlist.yaml"
             allowlist_mgr = (
@@ -406,7 +421,7 @@ class AnalysisOrchestrator:
         incident_id: str,
         new_status: str,
     ) -> None:
-        """Keep persisted JSON bundle in sync when an analyst updates an incident status."""
+        """Keep persisted JSON bundle and summary counts in sync on incident status change."""
         bundle_path = self._bundle_path(analysis_id)
         if not bundle_path.is_file():
             return
@@ -415,7 +430,29 @@ class AnalysisOrchestrator:
             for item in bundle_dict.get(key, []):
                 if item.get("incident_id") == incident_id:
                     item["status"] = new_status
+
+        incidents = list(bundle_dict.get("incidents", []))
+        active_incs = [
+            inc
+            for inc in incidents
+            if not inc.get("suppressed") and inc.get("status") not in {"Resolved", "Closed"}
+        ]
+        suppressed_incs = [inc for inc in incidents if inc.get("suppressed")]
+        bundle_dict["active_incidents"] = active_incs
+        bundle_dict["suppressed_incidents"] = suppressed_incs
+        summary = bundle_dict.setdefault("summary", {})
+        summary["correlated_incidents"] = len(incidents)
+        summary["total_incidents"] = len(incidents)
+        summary["active_incidents"] = len(active_incs)
+        summary["allowlisted_incidents"] = len(suppressed_incs)
         bundle_path.write_text(json.dumps(bundle_dict), encoding="utf-8")
+
+        now = datetime.now(UTC).isoformat()
+        with self.db.connection() as conn:
+            conn.execute(
+                "UPDATE investigations SET summary_json = ?, updated_at = ? WHERE analysis_id = ?",
+                (json.dumps(summary), now, analysis_id),
+            )
 
     def list_investigations(self, limit: int = 50) -> list[dict[str, Any]]:
         """List recent investigations stored in SQLite."""

@@ -6,6 +6,7 @@ from typing import Any
 
 from app.models.detection import DetectionFinding
 from app.models.mitre import MitreMapping, MitreTechniqueDef
+from app.utils.network import is_external_ip, is_raw_ip_host
 
 # Verified against the official MITRE ATT&CK Enterprise Knowledge Base.
 MITRE_TECHNIQUE_CATALOG: dict[str, MitreTechniqueDef] = {
@@ -213,6 +214,7 @@ class MitreMapper:
                 if m.confidence_score > existing.confidence_score:
                     existing.confidence_score = m.confidence_score
                     existing.confidence_level = m.confidence_level
+                if m.reason and m.reason not in existing.reason:
                     existing.reason = f"{existing.reason} | {m.reason}"
                 existing.supporting_evidence = {
                     **existing.supporting_evidence,
@@ -236,13 +238,25 @@ class MitreMapper:
         if tid == "T1071.004":
             if finding.protocol != "DNS":
                 return None
+            sample_attrs = ev.get("sample_attributes") or {}
+            has_dns_c2_evidence = bool(
+                (ev.get("query_count") or 0) >= 4
+                or (ev.get("nxdomain_count") or 0) >= 5
+                or (ev.get("max_entropy") or 0.0) >= 3.5
+                or (ev.get("max_query_length") or 0) >= 50
+                or (ev.get("txt_or_any_count") or 0) >= 2
+                or float(sample_attrs.get("query_entropy") or 0.0) >= 3.5
+                or int(sample_attrs.get("query_length") or 0) >= 50
+            )
+            if not has_dns_c2_evidence:
+                return None
             return (
                 "DNS queries exhibited multi-indicator tunnelling or anomalous NXDOMAIN behaviour.",
                 {
                     "protocol": "DNS",
                     "parent_domain": ev.get("parent_domain"),
                     "query_count": ev.get("query_count") or ev.get("matched_packet_count"),
-                    "max_entropy": ev.get("max_entropy"),
+                    "max_entropy": ev.get("max_entropy") or sample_attrs.get("query_entropy"),
                     "nxdomain_ratio": ev.get("nxdomain_ratio"),
                 },
                 finding.confidence,
@@ -253,6 +267,22 @@ class MitreMapper:
                 return None
             if finding.protocol == "TLS":
                 return None
+            sample_attrs = ev.get("sample_attributes") or {}
+            flow_metrics = ev.get("flow_metrics") or {}
+            has_exfil_evidence = bool(
+                (ev.get("outbound_bytes") or 0) >= 10_000
+                or (flow_metrics.get("outbound_bytes") or 0) >= 10_000
+                or (ev.get("max_payload_bytes") or 0) >= 10_000
+                or (ev.get("max_packet_length") or 0) >= 200
+                or (ev.get("encoded_subdomain_count") or 0) >= 2
+                or (ev.get("txt_or_any_count") or 0) >= 2
+                or (ev.get("max_query_length") or 0) >= 50
+                or (ev.get("max_entropy") or 0.0) >= 3.5
+                or int(sample_attrs.get("query_length") or 0) >= 50
+                or (finding.detector_type == "protocol_anomaly" and ev.get("mismatch_reason"))
+            )
+            if not has_exfil_evidence:
+                return None
             return (
                 f"Unencrypted {finding.protocol} traffic exhibited potential alternative-protocol "
                 "exfiltration indicators.",
@@ -260,7 +290,9 @@ class MitreMapper:
                     "protocol": finding.protocol,
                     "source_ip": finding.source_ip,
                     "destination_ip": finding.destination_ip,
-                    "outbound_bytes": ev.get("outbound_bytes"),
+                    "outbound_bytes": (
+                        ev.get("outbound_bytes") or flow_metrics.get("outbound_bytes")
+                    ),
                     "max_packet_length": ev.get("max_packet_length"),
                     "triggered_indicators": ev.get("triggered_indicators"),
                 },
@@ -271,7 +303,10 @@ class MitreMapper:
             protocols = ev.get("protocols") or [finding.protocol]
             if "TLS" not in protocols and finding.protocol != "TLS":
                 return None
-            if (ev.get("outbound_bytes") or 0) <= 0 and finding.detector_type != "protocol_anomaly":
+            if (
+                (ev.get("outbound_bytes") or 0) < 10_000
+                and finding.detector_type != "protocol_anomaly"
+            ):
                 return None
             return (
                 "Asymmetrically encrypted TLS flow(s) transferred disproportionate outbound bytes "
@@ -288,13 +323,33 @@ class MitreMapper:
         if tid == "T1567":
             if finding.protocol != "HTTP":
                 return None
+            sample_attrs = ev.get("sample_attributes") or {}
+            methods = set(ev.get("methods") or [])
+            if isinstance(sample_attrs.get("method"), str):
+                methods.add(sample_attrs["method"].upper())
+            if methods:
+                has_upload_method = bool(methods & {"POST", "PUT", "PATCH"})
+            else:
+                has_upload_method = any(
+                    tok in f"{finding.detection_name} {finding.explanation}".lower()
+                    for tok in ("post", "put", "patch", "upload")
+                )
+            upload_bytes = max(
+                int(ev.get("max_payload_bytes") or 0),
+                int(ev.get("total_upload_bytes") or 0),
+                int(sample_attrs.get("payload_bytes") or 0),
+            )
+            upload_count = int(ev.get("upload_request_count") or 0)
+            if not has_upload_method or (upload_bytes < 10_000 and upload_count < 2):
+                return None
             return (
                 "HTTP upload request(s) (POST/PUT/PATCH) sent substantial payload data to an "
                 "external endpoint.",
                 {
-                    "methods": ev.get("methods"),
+                    "methods": sorted(methods),
                     "max_payload_bytes": ev.get("max_payload_bytes"),
-                    "upload_request_count": ev.get("upload_request_count"),
+                    "upload_request_count": upload_count,
+                    "flow_observed_outbound_bytes": ev.get("flow_observed_outbound_bytes"),
                     "sample_requests": ev.get("sample_requests"),
                 },
                 finding.confidence,
@@ -304,18 +359,28 @@ class MitreMapper:
             if finding.protocol != "HTTP":
                 return None
             sample_attrs = ev.get("sample_attributes") or {}
-            raw_ip = bool(sample_attrs.get("raw_ip_host"))
+            sample_reqs = ev.get("sample_requests") or []
+            raw_ip = bool(sample_attrs.get("raw_ip_host")) or any(
+                isinstance(r, dict) and is_raw_ip_host(r.get("host"))
+                for r in sample_reqs
+            )
             dst_port = finding.destination_port
             non_std_port = dst_port is not None and dst_port not in {80, 8080, 8000, 8008}
             req_freq = float(ev.get("requests_per_minute") or 0.0)
-            if not (raw_ip or non_std_port or req_freq >= 20.0):
+            inds = ev.get("triggered_indicators") or []
+            has_suspicious_ua = bool(
+                ev.get("user_agents")
+                and any("automated/suspicious user-agent" in ind.lower() for ind in inds)
+            )
+            if not (raw_ip or non_std_port or req_freq >= 20.0 or has_suspicious_ua):
                 return None
             return (
                 "Anomalous HTTP web-protocol communication observed "
-                "(raw-IP Host, uncommon port, or automated polling cadence).",
+                "(raw-IP Host, uncommon port, automated User-Agent, or polling cadence).",
                 {
                     "destination_port": dst_port,
                     "sample_attributes": sample_attrs,
+                    "raw_ip_host": raw_ip,
                     "triggered_indicators": ev.get("triggered_indicators"),
                 },
                 finding.confidence,
@@ -323,13 +388,18 @@ class MitreMapper:
 
         if tid == "T1041":
             # Require periodic beaconing, external C2 port, or large outbound upload
+            flow_metrics = ev.get("flow_metrics") or {}
             is_beacon = finding.detector_type == "network_beaconing"
             is_ext_c2_port = (
                 finding.detector_type == "suspicious_ports"
                 and bool(ev.get("external_destination"))
+            ) or (
+                finding.rule_id == "RULE-007"
+                and is_external_ip(finding.destination_ip)
             )
             has_volume = (
                 (ev.get("outbound_bytes") or 0) >= 50_000
+                or (flow_metrics.get("outbound_bytes") or 0) >= 50_000
                 or (ev.get("max_payload_bytes") or 0) >= 50_000
                 or ((ev.get("sample_attributes") or {}).get("payload_bytes") or 0) >= 50_000
             )
@@ -341,27 +411,47 @@ class MitreMapper:
                 {
                     "destination_ip": finding.destination_ip,
                     "destination_port": finding.destination_port,
-                    "outbound_bytes": ev.get("outbound_bytes") or ev.get("max_payload_bytes"),
+                    "outbound_bytes": (
+                        ev.get("outbound_bytes")
+                        or flow_metrics.get("outbound_bytes")
+                        or ev.get("max_payload_bytes")
+                    ),
                     "interval_cv": ev.get("interval_cv"),
                 },
                 min(0.92, finding.confidence * 0.95),
             )
 
         if tid == "T1571":
-            if finding.detector_type != "protocol_anomaly":
+            is_mismatch = finding.detector_type == "protocol_anomaly" and bool(
+                ev.get("mismatch_reason")
+            )
+            is_non_std_http = (
+                finding.protocol == "HTTP"
+                and is_external_ip(finding.destination_ip)
+                and finding.destination_port is not None
+                and finding.destination_port not in {80, 8080, 8000, 8008}
+            )
+            if not (is_mismatch or is_non_std_http):
                 return None
             return (
-                "Application protocol observed over an unexpected destination port.",
+                "Application protocol observed over an unexpected or "
+                "non-standard destination port.",
                 {
-                    "application_protocol": ev.get("application_protocol"),
-                    "destination_port": ev.get("destination_port"),
-                    "mismatch_reason": ev.get("mismatch_reason"),
+                    "application_protocol": ev.get("application_protocol") or finding.protocol,
+                    "destination_port": ev.get("destination_port") or finding.destination_port,
+                    "mismatch_reason": ev.get("mismatch_reason")
+                    or (
+                        f"{finding.protocol} over non-standard external port "
+                        f"{finding.destination_port}"
+                    ),
                 },
                 finding.confidence,
             )
 
         if tid == "T1095":
             if finding.protocol != "ICMP":
+                return None
+            if (ev.get("icmp_packet_count") or 0) < 10 and (ev.get("max_packet_length") or 0) < 200:
                 return None
             return (
                 "Unusual external ICMP packet length or volume observed "

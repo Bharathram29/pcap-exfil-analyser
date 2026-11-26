@@ -127,19 +127,19 @@
     <div class="card">
       <p>
         Analysis of <strong>{{ bundle.capture_metadata.original_filename }}</strong> inspected
-        <strong>{{ "{:,}".format(bundle.summary.total_packets) }}</strong> packets across
-        <strong>{{ "{:,}".format(bundle.summary.total_flows) }}</strong> reconstructed bidirectional flows
-        ({{ bundle.summary.unique_source_ips }} unique source IPs,
-        {{ bundle.summary.unique_destination_ips }} unique destination IPs).
-        Total alerts: <strong>{{ bundle.summary.total_alerts | default(bundle.alerts | length) }}</strong>
-        (<strong>{{ bundle.summary.suspicious_events }}</strong> active,
-        <strong>{{ bundle.summary.allowlisted_alerts | default(bundle.summary.suppressed_events) }}</strong> allowlisted).
-        Correlated incidents: <strong>{{ bundle.summary.correlated_incidents | default(bundle.incidents | length) }}</strong>
-        (<strong>{{ bundle.summary.active_incidents | default(bundle.active_incidents | length) }}</strong> active,
-        <strong>{{ bundle.summary.allowlisted_incidents | default(bundle.suppressed_incidents | length) }}</strong> allowlisted).
-        Active severity breakdown: {{ bundle.summary.critical_alerts }} Critical, {{ bundle.summary.high_alerts }} High,
-        {{ bundle.summary.medium_alerts }} Medium, {{ bundle.summary.low_alerts }} Low;
-        mapped to <strong>{{ bundle.mitre_mappings | length }}</strong> MITRE ATT&amp;CK Enterprise technique(s).
+        <strong>{{ "{:,}".format(report_counts.total_packets) }}</strong> packets across
+        <strong>{{ "{:,}".format(report_counts.total_flows) }}</strong> reconstructed bidirectional flows
+        ({{ report_counts.unique_source_ips }} unique source IPs,
+        {{ report_counts.unique_destination_ips }} unique destination IPs).
+        Total alerts: <strong>{{ report_counts.total_alerts }}</strong>
+        (<strong>{{ report_counts.active_alerts }}</strong> active,
+        <strong>{{ report_counts.allowlisted_alerts }}</strong> allowlisted).
+        Correlated incidents: <strong>{{ report_counts.correlated_incidents }}</strong>
+        (<strong>{{ report_counts.active_incidents }}</strong> active,
+        <strong>{{ report_counts.allowlisted_incidents }}</strong> allowlisted).
+        Active severity breakdown: {{ report_counts.critical_alerts }} Critical, {{ report_counts.high_alerts }} High,
+        {{ report_counts.medium_alerts }} Medium, {{ report_counts.low_alerts }} Low;
+        mapped to <strong>{{ report_counts.mitre_count }}</strong> MITRE ATT&amp;CK Enterprise technique(s).
       </p>
       <div class="callout">
         <strong>Forensic Integrity Notice:</strong>
@@ -153,9 +153,9 @@
 
     <h2>3. Packet, Flow &amp; Severity Statistics</h2>
     <div class="grid">
-      <div class="kpi"><div class="label">Total Packets</div><div class="value">{{ "{:,}".format(bundle.summary.total_packets) }}</div></div>
-      <div class="kpi"><div class="label">Network Flows</div><div class="value">{{ "{:,}".format(bundle.summary.total_flows) }}</div></div>
-      <div class="kpi"><div class="label">Active Incidents</div><div class="value">{{ bundle.active_incidents | length }}</div></div>
+      <div class="kpi"><div class="label">Total Packets</div><div class="value">{{ "{:,}".format(report_counts.total_packets) }}</div></div>
+      <div class="kpi"><div class="label">Network Flows</div><div class="value">{{ "{:,}".format(report_counts.total_flows) }}</div></div>
+      <div class="kpi"><div class="label">Active Incidents</div><div class="value">{{ report_counts.active_incidents }}</div></div>
       <div class="kpi"><div class="label">Outbound Bytes</div><div class="value">{{ "{:,}".format(bundle.summary.outbound_bytes) }}</div></div>
       <div class="kpi"><div class="label">Inbound Bytes</div><div class="value">{{ "{:,}".format(bundle.summary.inbound_bytes) }}</div></div>
       <div class="kpi"><div class="label">DNS Queries</div><div class="value">{{ "{:,}".format(bundle.summary.dns_queries) }}</div></div>
@@ -241,7 +241,7 @@
               <td><span class="badge sev-{{ inc.overall_severity }}">{{ inc.overall_severity }}</span>
                 {% if inc.suppressed %}<div class="suppressed-tag">Allowlisted</div>{% endif %}
               </td>
-              <td><strong>{{ inc.risk_score }}</strong></td>
+              <td><strong>{{ fmt_score(inc.risk_score) }}</strong></td>
               <td>{{ (inc.overall_confidence * 100) | round | int }}%</td>
               <td><strong>{{ inc.incident_title }}</strong><br><small>{{ inc.detection_categories | join(", ") }}<br>{{ inc.correlation_reason }}</small></td>
               <td><code>{{ inc.source_hosts | join(", ") }}</code> → <code>{{ inc.destination_hosts | join(", ") }}</code></td>
@@ -408,7 +408,7 @@
               <td><span class="badge sev-{{ a.severity }}">{{ a.severity }}</span>
                 {% if a.suppressed %}<div class="suppressed-tag">Allowlisted (Suppressed)</div>{% endif %}
               </td>
-              <td><strong>{{ a.priority_breakdown.risk_score | default(a.priority_score) }}</strong></td>
+              <td><strong>{{ fmt_score(a.priority_breakdown.risk_score | default(a.priority_score)) }}</strong></td>
               <td>{{ (a.confidence * 100) | round | int }}%</td>
               <td><strong>{{ a.title }}</strong><br><small>Status: {{ a.status }} | Rules: {{ a.contributing_rule_ids | join(", ") if a.contributing_rule_ids else a.detector_types | join(", ") }}<br>{{ a.priority_breakdown.rationale }}<br>{{ a.priority_breakdown.severity_explanation | default("") }}<br>{{ a.priority_breakdown.confidence_rationale | default("") }}</small></td>
               <td><code>{{ a.source_ip or "-" }}:{{ a.source_port or "-" }}</code> → <code>{{ a.destination_ip or "-" }}:{{ a.destination_port or "-" }}</code></td>

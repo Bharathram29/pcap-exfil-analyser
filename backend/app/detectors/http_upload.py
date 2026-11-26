@@ -8,7 +8,19 @@ from collections import defaultdict
 from app.detectors.base import BaseDetector
 from app.models.detection import DetectionContext, DetectionFinding
 from app.models.packet import NormalizedPacket
+from app.utils.network import is_external_ip
 from app.utils.network import is_raw_ip_host as _is_raw_ip_host
+
+
+def _resolve_packet_flow_map(context: DetectionContext) -> dict[int, str]:
+    """Return mapping of packet_index -> flow_id from context or reconstructed flows."""
+    if context.packet_flow_map:
+        return context.packet_flow_map
+    mapping: dict[int, str] = {}
+    for flow in context.flows:
+        for pidx in flow.packet_indices:
+            mapping.setdefault(pidx, flow.flow_id)
+    return mapping
 
 
 class HttpUploadDetector(BaseDetector):
@@ -40,13 +52,24 @@ class HttpUploadDetector(BaseDetector):
                 flow.bytes_initiator_to_responder
             )
 
+        pkt_flow_map = _resolve_packet_flow_map(context)
         findings: list[DetectionFinding] = []
         for (src_ip, dst_ip, dst_port), pkts in sorted(req_grouped.items()):
             resp_bytes = resp_bytes_by_pair.get((src_ip, dst_ip), 0)
             resp_codes = resp_codes_by_pair.get((src_ip, dst_ip), [])
             flow_out = flow_out_by_target.get((src_ip or "", dst_ip or "", dst_port), 0)
+            matched_fids = sorted(
+                {pkt_flow_map[p.packet_index] for p in pkts if p.packet_index in pkt_flow_map}
+            )
             finding = self._evaluate_http_target(
-                src_ip, dst_ip, dst_port, pkts, resp_bytes, resp_codes, flow_out
+                src_ip,
+                dst_ip,
+                dst_port,
+                pkts,
+                resp_bytes,
+                resp_codes,
+                flow_out,
+                matched_fids,
             )
             if finding is not None:
                 findings.append(finding)
@@ -61,6 +84,7 @@ class HttpUploadDetector(BaseDetector):
         total_response_bytes: int,
         response_status_codes: list[int],
         flow_observed_outbound_bytes: int,
+        matched_flow_ids: list[str] | None = None,
     ) -> DetectionFinding | None:
         cfg = self.config
         ordered = sorted(pkts, key=lambda p: p.timestamp)
@@ -116,6 +140,9 @@ class HttpUploadDetector(BaseDetector):
             max(p.http.payload_size, p.http.content_length or 0)
             for p in upload_pkts
             if p.http
+        )
+        captured_upload_body_bytes = sum(
+            p.http.payload_size for p in upload_pkts if p.http
         )
         incomplete_payloads = sum(
             1 for p in ordered if p.http and p.http.payload_incomplete
@@ -200,6 +227,25 @@ class HttpUploadDetector(BaseDetector):
             else ""
         )
 
+        fids = list(matched_flow_ids or [])
+        primary_flow_id = fids[0] if len(fids) == 1 else None
+        candidate_mitre: list[str] = []
+        if upload_pkts and (
+            max_payload >= 10_000
+            or total_upload_bytes >= 10_000
+            or len(upload_pkts) >= cfg.http_repeated_upload_count
+        ):
+            candidate_mitre.append("T1567")
+        if (
+            max_payload >= cfg.http_large_payload_bytes
+            or total_upload_bytes >= cfg.http_large_payload_bytes
+        ):
+            candidate_mitre.append("T1041")
+        if raw_ip_hosts or unusual_port or suspicious_uas or high_freq:
+            candidate_mitre.append("T1071.001")
+        if unusual_port and is_external_ip(dst_ip):
+            candidate_mitre.append("T1571")
+
         return DetectionFinding(
             detection_id=f"det-http-{det_hash}",
             detection_name="Suspicious HTTP Upload / Request Behaviour",
@@ -213,6 +259,7 @@ class HttpUploadDetector(BaseDetector):
             source_port=first_pkt.src_port,
             destination_port=dst_port,
             protocol="HTTP",
+            flow_id=primary_flow_id,
             packet_indices=pkt_indices,
             evidence={
                 "methods": methods,
@@ -220,6 +267,7 @@ class HttpUploadDetector(BaseDetector):
                 "upload_request_count": len(upload_pkts),
                 "max_payload_bytes": max_payload,
                 "total_upload_bytes": total_upload_bytes,
+                "captured_upload_body_bytes": captured_upload_body_bytes,
                 "flow_observed_outbound_bytes": flow_observed_outbound_bytes,
                 "total_response_bytes": total_response_bytes,
                 "response_status_codes": response_status_codes[:20],
@@ -228,12 +276,17 @@ class HttpUploadDetector(BaseDetector):
                 "user_agents": user_agents,
                 "content_types": content_types,
                 "payload_incomplete_count": incomplete_payloads,
+                "flow_ids": fids,
                 "triggered_indicators": indicators,
                 "sample_requests": sample_requests,
                 "packet_indices": pkt_indices[:100],
             },
             explanation=(
-                f"Detected {len(ordered)} HTTP request(s) from {src_ip} to {dst_ip}:{dst_port} "
+                f"Detected {len(ordered)} HTTP request(s) "
+                f"({len(upload_pkts)} POST/PUT/PATCH upload(s); "
+                f"declared/max HTTP body={total_upload_bytes:,} B, captured segment body="
+                f"{captured_upload_body_bytes:,} B; observed flow network outbound="
+                f"{flow_observed_outbound_bytes:,} B) from {src_ip} to {dst_ip}:{dst_port} "
                 "exhibiting: " + "; ".join(indicators) + f".{incomplete_note} Raw body bytes are "
                 "not dumped in evidence, and encrypted HTTPS traffic is not decrypted."
             ),
@@ -245,5 +298,5 @@ class HttpUploadDetector(BaseDetector):
                     "or file-sharing target."
                 ),
             ],
-            candidate_mitre_ids=["T1567", "T1041"],
+            candidate_mitre_ids=candidate_mitre,
         )

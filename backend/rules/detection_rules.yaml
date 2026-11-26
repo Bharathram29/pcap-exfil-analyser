@@ -47,7 +47,10 @@ rules:
       min_entropy: 3.8
     severity: CRITICAL
     confidence: 0.85
-    mitre_id: T1048.003
+    mitre_id: T1071.004
+    mitre_ids:
+      - T1071.004
+      - T1048.003
     description: Unusually long, high-entropy DNS query detected.
     recommended_steps:
       - Inspect the queried parent domain and subdomain structure.

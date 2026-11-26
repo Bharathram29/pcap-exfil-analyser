@@ -155,7 +155,11 @@ class AlertManager:
         # Correlate alerts into higher-level incidents while preserving all raw alerts
         correlator = IncidentCorrelator(correlation_config)
         incidents = correlator.correlate(alerts)
-        active_incidents = [inc for inc in incidents if not inc.suppressed]
+        active_incidents = [
+            inc
+            for inc in incidents
+            if not inc.suppressed and inc.status not in {"Resolved", "Closed"}
+        ]
         suppressed_incidents = [inc for inc in incidents if inc.suppressed]
 
         # Sort unsuppressed alerts first, then descending priority_score
