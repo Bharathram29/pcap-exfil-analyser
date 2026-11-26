@@ -1,0 +1,155 @@
+# PCAP Exfiltration Analyser — Configurable Detection Rules
+#
+# Schema:
+#   version: Semantic version of the rule pack.
+#   rules: List of rule objects.
+#     - id: Unique rule identifier (e.g., RULE-001)
+#       name: Descriptive rule title
+#       enabled: true | false
+#       protocol: HTTP | DNS | TLS | TCP | UDP | ICMP | FLOW | ANY
+#       operator: AND | OR (defaults to AND)
+#       condition: Key/value thresholds OR { all: [...], any: [...] }
+#       severity: CRITICAL | HIGH | MEDIUM | LOW | INFORMATIONAL
+#       confidence: Float 0.0 - 1.0 (optional, default 0.75)
+#       mitre_id: Single MITRE ATT&CK technique ID (optional)
+#       mitre_ids: List of MITRE ATT&CK technique IDs (optional)
+#       description: Human-readable explanation of what triggered the rule
+#       recommended_steps: List of SOC investigation steps (optional)
+
+version: "1.0"
+description: "Default network exfiltration and C2 detection rule pack"
+
+rules:
+  - id: RULE-001
+    name: Large HTTP POST Upload
+    enabled: true
+    protocol: HTTP
+    operator: AND
+    condition:
+      method: POST
+      min_payload_bytes: 500000
+    severity: HIGH
+    confidence: 0.80
+    mitre_id: T1041
+    description: Large outbound HTTP POST upload detected (>= 500,000 payload bytes).
+    recommended_steps:
+      - Inspect the HTTP Host, URI, and User-Agent headers in the evidence block.
+      - Verify on the source endpoint whether this upload corresponds to authorised activity.
+
+  - id: RULE-002
+    name: Potential DNS Tunnelling Query
+    enabled: true
+    protocol: DNS
+    operator: AND
+    condition:
+      is_response: false
+      min_query_length: 65
+      min_entropy: 3.8
+    severity: CRITICAL
+    confidence: 0.85
+    mitre_id: T1048.003
+    description: Unusually long, high-entropy DNS query detected.
+    recommended_steps:
+      - Inspect the queried parent domain and subdomain structure.
+      - Correlate with DNS TXT/NULL response volume and endpoint process telemetry.
+
+  - id: RULE-003
+    name: High-Ratio Outbound Data Transfer
+    enabled: true
+    protocol: FLOW
+    operator: AND
+    condition:
+      direction: outbound
+      external_destination: true
+      min_outbound_bytes: 250000
+      min_outbound_ratio: 5.0
+    severity: HIGH
+    confidence: 0.78
+    mitre_id: T1041
+    description: Outbound external flow transferred >= 250 KB with >= 5:1 upload-to-download ratio.
+    recommended_steps:
+      - Validate destination IP reputation, ASN, and any observed TLS SNI or HTTP Host.
+      - Confirm whether NAT or asymmetric routing affects observed flow byte ratios.
+
+  - id: RULE-004
+    name: HTTP Upload via PUT or Uncommon Method
+    enabled: true
+    protocol: HTTP
+    operator: AND
+    condition:
+      method:
+        - PUT
+        - PATCH
+      min_payload_bytes: 10000
+    severity: MEDIUM
+    confidence: 0.72
+    mitre_id: T1567
+    description: Outbound HTTP PUT/PATCH upload with significant body size observed.
+
+  - id: RULE-005
+    name: Direct-to-IP HTTP Request or Non-Standard HTTP Port
+    enabled: true
+    protocol: HTTP
+    operator: AND
+    condition:
+      all:
+        - is_request: true
+        - any:
+            - raw_ip_host: true
+            - excluded_dst_ports:
+                - 80
+                - 8080
+                - 8000
+                - 8008
+    severity: MEDIUM
+    confidence: 0.70
+    mitre_id: T1071.001
+    description: HTTP request targeted a raw IP Host header or non-standard HTTP port.
+
+  - id: RULE-006
+    name: Large External ICMP Packet
+    enabled: true
+    protocol: ICMP
+    operator: AND
+    condition:
+      external_destination: true
+      min_packet_length: 256
+    severity: MEDIUM
+    confidence: 0.68
+    mitre_id: T1048.003
+    description: External ICMP packet exceeding 256 bytes (possible ICMP tunnelling or diagnostics).
+
+  - id: RULE-007
+    name: Outbound Connection to High-Risk C2 Port
+    enabled: true
+    protocol: FLOW
+    operator: AND
+    condition:
+      direction: outbound
+      external_destination: true
+      dst_ports:
+        - 1337
+        - 4444
+        - 5555
+        - 6666
+        - 6667
+        - 9001
+        - 9050
+        - 31337
+    severity: HIGH
+    confidence: 0.74
+    mitre_id: T1041
+    description: Outbound connection observed to a commonly abused C2/proxy/reverse-shell port.
+
+  - id: RULE-008
+    name: Example Disabled Custom Rule
+    enabled: false
+    protocol: DNS
+    operator: OR
+    condition:
+      query_type: TXT
+      min_query_length: 100
+    severity: LOW
+    confidence: 0.50
+    mitre_id: T1071.004
+    description: Disabled example rule demonstrating OR operator and enabled=false toggle.

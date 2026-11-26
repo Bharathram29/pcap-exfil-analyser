@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Forensic Incident Report — {{ bundle.analysis_id }}</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --card: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+      --crit: #ef4444;
+      --high: #f97316;
+      --med: #eab308;
+      --low: #3b82f6;
+      --info: #64748b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 32px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    .container { max-width: 1180px; margin: 0 auto; }
+    header {
+      border: 1px solid var(--border); background: var(--card);
+      border-radius: 10px; padding: 24px; margin-bottom: 24px;
+    }
+    h1 { margin: 0 0 6px; font-size: 24px; color: #f8fafc; }
+    h2 {
+      margin: 28px 0 12px; font-size: 18px; color: var(--accent);
+      border-bottom: 1px solid var(--border); padding-bottom: 6px;
+    }
+    h3 { margin: 16px 0 8px; font-size: 15px; color: #f1f5f9; }
+    .subtitle { color: var(--muted); font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 12px; margin: 16px 0; }
+    .kpi {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px;
+    }
+    .kpi .label { font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; }
+    .kpi .value { font-size: 22px; font-weight: 700; margin-top: 4px; color: #f8fafc; }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 18px; margin-bottom: 16px;
+    }
+    .callout {
+      border-left: 4px solid var(--accent); background: #0f172a;
+      padding: 12px 16px; border-radius: 6px; margin: 12px 0; font-size: 13px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0 18px; }
+    th, td {
+      text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border);
+      vertical-align: top; word-break: break-word;
+    }
+    th { background: #0f172a; color: #cbd5e1; font-weight: 600; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px; background: #0f172a; padding: 2px 5px; border-radius: 4px;
+    }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.03em; color: #fff;
+    }
+    .sev-CRITICAL { background: var(--crit); }
+    .sev-HIGH { background: var(--high); }
+    .sev-MEDIUM { background: var(--med); color: #111827; }
+    .sev-LOW { background: var(--low); }
+    .sev-INFORMATIONAL { background: var(--info); }
+    .suppressed-tag {
+      display: inline-block; padding: 2px 7px; border-radius: 4px;
+      background: #334155; color: #cbd5e1; font-size: 11px;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul { margin: 8px 0; padding-left: 20px; }
+    li { margin-bottom: 5px; }
+    @media print {
+      body { background: #fff; color: #111827; padding: 16px; }
+      header, .card, .kpi { background: #fff; border-color: #d1d5db; }
+      th { background: #f3f4f6; color: #111827; }
+      h1, .kpi .value { color: #111827; }
+      .callout { background: #f8fafc; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>PCAP Exfiltration Analyser — Network Forensic Incident Report</h1>
+      <div class="subtitle">
+        From Raw Packets to Actionable Security Intelligence |
+        Investigation ID: <code>{{ bundle.analysis_id }}</code> |
+        Generated (UTC): <code>{{ bundle.generated_at_utc }}</code>
+      </div>
+    </header>
+
+    <h2>1. Investigation &amp; Capture Forensic Metadata</h2>
+    <div class="card">
+      <table>
+        <tbody>
+          <tr><th>Original Filename</th><td><code>{{ bundle.capture_metadata.original_filename }}</code></td>
+              <th>Capture Format</th><td>{{ bundle.capture_metadata.capture_format | upper }}</td></tr>
+          <tr><th>Capture SHA-256 Digest</th><td colspan="3"><code>{{ bundle.capture_metadata.sha256 }}</code></td></tr>
+          <tr><th>File Size</th><td>{{ "{:,}".format(bundle.capture_metadata.file_size_bytes) }} bytes</td>
+              <th>Link Layer</th><td>{{ bundle.capture_metadata.link_layer_name or "Unknown" }} (DLT {{ bundle.capture_metadata.link_layer_type }})</td></tr>
+          <tr><th>Ingested (UTC)</th><td><code>{{ bundle.capture_metadata.ingested_at_utc }}</code></td>
+              <th>Processing Duration</th><td>{{ bundle.processing_duration_ms }} ms</td></tr>
+          <tr><th>Malformed Packets</th><td>{{ bundle.capture_metadata.malformed_packet_count }}</td>
+              <th>Analysis Status</th><td>{{ bundle.status }}</td></tr>
+        </tbody>
+      </table>
+      {% if bundle.capture_metadata.warnings %}
+        <h3>Ingestion &amp; Dissection Warnings</h3>
+        <ul>
+          {% for warn in bundle.capture_metadata.warnings %}
+            <li>{{ warn }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+
+    <h2>2. Executive Summary</h2>
+    <div class="card">
+      <p>
+        Analysis of <strong>{{ bundle.capture_metadata.original_filename }}</strong> inspected
+        <strong>{{ "{:,}".format(bundle.summary.total_packets) }}</strong> packets across
+        <strong>{{ "{:,}".format(bundle.summary.total_flows) }}</strong> reconstructed bidirectional flows
+        ({{ bundle.summary.unique_source_ips }} unique source IPs,
+        {{ bundle.summary.unique_destination_ips }} unique destination IPs).
+        Related findings were consolidated into <strong>{{ bundle.active_incidents | length }}</strong> active correlated incident(s)
+        covering <strong>{{ bundle.summary.suspicious_events }}</strong> individual active suspicious event(s)
+        ({{ bundle.summary.critical_alerts }} Critical, {{ bundle.summary.high_alerts }} High,
+        {{ bundle.summary.medium_alerts }} Medium) and <strong>{{ bundle.summary.suppressed_events }}</strong>
+        allowlist-tagged event(s), mapped to <strong>{{ bundle.mitre_mappings | length }}</strong>
+        MITRE ATT&amp;CK Enterprise technique(s).
+      </p>
+      <div class="callout">
+        <strong>Forensic Integrity Notice:</strong>
+        <ul>
+          <li><strong>Confirmed Observations:</strong> Packet counts, endpoints, byte volumes, DNS/HTTP headers, and TLS SNI metadata observed directly in the capture.</li>
+          <li><strong>Suspicious Indicators:</strong> Statistical anomalies (DNS entropy/length bursts, outbound byte asymmetry, periodic beaconing, HTTP uploads) surfaced by heuristics and YAML rules.</li>
+          <li><strong>Inferred Conclusions:</strong> Correlated incidents and MITRE ATT&amp;CK mappings inferred from corroborating indicators; heuristics alone do not prove unauthorised data theft or compromise without host/endpoint corroboration.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>3. Packet, Flow &amp; Severity Statistics</h2>
+    <div class="grid">
+      <div class="kpi"><div class="label">Total Packets</div><div class="value">{{ "{:,}".format(bundle.summary.total_packets) }}</div></div>
+      <div class="kpi"><div class="label">Network Flows</div><div class="value">{{ "{:,}".format(bundle.summary.total_flows) }}</div></div>
+      <div class="kpi"><div class="label">Active Incidents</div><div class="value">{{ bundle.active_incidents | length }}</div></div>
+      <div class="kpi"><div class="label">Outbound Bytes</div><div class="value">{{ "{:,}".format(bundle.summary.outbound_bytes) }}</div></div>
+      <div class="kpi"><div class="label">Inbound Bytes</div><div class="value">{{ "{:,}".format(bundle.summary.inbound_bytes) }}</div></div>
+      <div class="kpi"><div class="label">DNS Queries</div><div class="value">{{ "{:,}".format(bundle.summary.dns_queries) }}</div></div>
+      <div class="kpi"><div class="label">HTTP Requests</div><div class="value">{{ "{:,}".format(bundle.summary.http_requests) }}</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Alert Severity Distribution</h3>
+      <svg width="100%" height="150" viewBox="0 0 700 150" role="img" aria-label="Severity Distribution Chart">
+        {% for bar in severity_chart_bars %}
+          <text x="10" y="{{ bar.y + 15 }}" fill="#cbd5e1" font-size="12">{{ bar.label }}</text>
+          <rect x="140" y="{{ bar.y }}" width="{{ bar.width }}" height="20" rx="4" fill="{{ bar.color }}" />
+          <text x="{{ 148 + bar.width }}" y="{{ bar.y + 15 }}" fill="#f8fafc" font-size="12">{{ bar.count }}</text>
+        {% endfor %}
+      </svg>
+
+      <h3>Protocol Distribution</h3>
+      <table>
+        <thead><tr><th>Protocol</th><th>Packets</th><th>Total Bytes</th></tr></thead>
+        <tbody>
+          {% for row in bundle.protocol_distribution %}
+            <tr><td><code>{{ row.protocol }}</code></td><td>{{ "{:,}".format(row.packet_count) }}</td><td>{{ "{:,}".format(row.byte_count) }}</td></tr>
+          {% else %}
+            <tr><td colspan="3">No packets recorded.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>4. Top Communicating Hosts &amp; Network Flows</h2>
+    <div class="card">
+      <h3>Top Communicating Hosts</h3>
+      <table>
+        <thead><tr><th>Host IP</th><th>Scope</th><th>Bytes Sent</th><th>Bytes Received</th><th>Total Bytes</th><th>Active Alerts</th></tr></thead>
+        <tbody>
+          {% for h in bundle.top_hosts[:10] %}
+            <tr>
+              <td><code>{{ h.ip }}</code></td>
+              <td>{{ "External" if h.is_external else "Internal" }}</td>
+              <td>{{ "{:,}".format(h.bytes_sent) }}</td>
+              <td>{{ "{:,}".format(h.bytes_received) }}</td>
+              <td>{{ "{:,}".format(h.total_bytes) }}</td>
+              <td>{{ h.alert_count }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6">No host flows reconstructed.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3>Top Network Flows (by Total Bytes)</h3>
+      <table>
+        <thead><tr><th>Initiator</th><th>Responder</th><th>Proto</th><th>Direction</th><th>Out Bytes</th><th>In Bytes</th><th>Ratio</th><th>State (Basis)</th></tr></thead>
+        <tbody>
+          {% for f in top_flows %}
+            <tr>
+              <td><code>{{ f.initiator_ip }}:{{ f.initiator_port or "-" }}</code></td>
+              <td><code>{{ f.responder_ip }}:{{ f.responder_port or "-" }}</code></td>
+              <td>{{ f.application_protocol }}</td>
+              <td>{{ f.direction }}</td>
+              <td>{{ "{:,}".format(f.bytes_initiator_to_responder) }}</td>
+              <td>{{ "{:,}".format(f.bytes_responder_to_initiator) }}</td>
+              <td>{{ f.outbound_to_inbound_ratio if f.outbound_to_inbound_ratio is not none else "-" }}</td>
+              <td>{{ f.connection_state }}<br><small>{{ f.state_basis | default("inferred") }}</small></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="8">No flows reconstructed.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>5. Correlated Security Incidents</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>Incident ID</th><th>Severity</th><th>Risk / Conf</th><th>Title &amp; Categories</th><th>Hosts</th><th>Window (First → Last)</th><th>Alerts / Packets</th></tr>
+        </thead>
+        <tbody>
+          {% for inc in bundle.incidents %}
+            <tr>
+              <td><code>{{ inc.incident_id }}</code></td>
+              <td><span class="badge sev-{{ inc.overall_severity }}">{{ inc.overall_severity }}</span>
+                {% if inc.suppressed %}<div class="suppressed-tag">Allowlisted</div>{% endif %}
+              </td>
+              <td>{{ inc.risk_score }} / {{ (inc.overall_confidence * 100) | round | int }}%</td>
+              <td><strong>{{ inc.incident_title }}</strong><br><small>{{ inc.detection_categories | join(", ") }}<br>{{ inc.correlation_reason }}</small></td>
+              <td><code>{{ inc.source_hosts | join(", ") }}</code> → <code>{{ inc.destination_hosts | join(", ") }}</code></td>
+              <td><small>{{ inc.first_seen }}<br>→ {{ inc.last_seen }}</small></td>
+              <td>{{ inc.alert_count }} alert(s)<br>{{ inc.packet_indices | length }} pkt ref(s)</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7">No correlated incidents recorded.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>6. DNS, HTTP &amp; TLS Metadata Analysis</h2>
+    <div class="card">
+      <h3>DNS Analysis</h3>
+      <p>
+        Total Queries: <strong>{{ bundle.dns_analysis.total_queries }}</strong> |
+        Unique Domains: <strong>{{ bundle.dns_analysis.unique_domains }}</strong> |
+        NXDOMAIN Replies: <strong>{{ bundle.dns_analysis.nxdomain_count }}</strong> |
+        Query Types: <code>{{ bundle.dns_analysis.query_types }}</code>
+      </p>
+      {% if bundle.dns_analysis.top_queried_domains %}
+        <table>
+          <thead><tr><th>Top Queried Domain</th><th>Query Count</th></tr></thead>
+          <tbody>
+            {% for d in bundle.dns_analysis.top_queried_domains[:8] %}
+              <tr><td><code>{{ d.domain }}</code></td><td>{{ d.count }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      <h3>HTTP Analysis</h3>
+      <p>
+        Total Requests: <strong>{{ bundle.http_analysis.total_requests }}</strong> |
+        Methods: <code>{{ bundle.http_analysis.methods }}</code> |
+        Observed Upload Bytes (POST/PUT/PATCH): <strong>{{ "{:,}".format(bundle.http_analysis.total_upload_payload_bytes) }}</strong>
+      </p>
+      {% if bundle.http_analysis.sample_requests %}
+        <table>
+          <thead><tr><th>Timestamp (UTC)</th><th>Method</th><th>Host</th><th>URI</th><th>User-Agent</th><th>Body Bytes</th></tr></thead>
+          <tbody>
+            {% for r in bundle.http_analysis.sample_requests[:8] %}
+              <tr>
+                <td><code>{{ r.timestamp }}</code></td>
+                <td><code>{{ r.method }}</code></td>
+                <td><code>{{ r.host or "-" }}</code></td>
+                <td><code>{{ r.uri or "-" }}</code></td>
+                <td>{{ r.user_agent or "-" }}</td>
+                <td>{{ "{:,}".format(r.payload_size) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      <h3>TLS Observable Metadata</h3>
+      <p>
+        TLS Handshakes: <strong>{{ bundle.tls_analysis.total_handshakes }}</strong> |
+        Versions: <code>{{ bundle.tls_analysis.versions }}</code> |
+        <em>{{ bundle.tls_analysis.note }}</em>
+      </p>
+      {% if bundle.tls_analysis.observed_snis %}
+        <p>Observed SNIs:
+          {% for s in bundle.tls_analysis.observed_snis %}
+            <code>{{ s.sni }} ({{ s.count }})</code>
+          {% endfor %}
+        </p>
+      {% endif %}
+    </div>
+
+    <h2>7. Specialized Findings: DNS Tunnelling, HTTP Uploads, Data Exfiltration &amp; Beaconing</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Category</th><th>Alert Title</th><th>Endpoints</th><th>Key Metrics</th><th>Packet Refs</th></tr></thead>
+        <tbody>
+          {% for a in specialized_alerts %}
+            <tr>
+              <td><code>{{ a.detector_types | join(", ") }}</code></td>
+              <td><strong>{{ a.title }}</strong></td>
+              <td><code>{{ a.source_ip or "-" }}</code> → <code>{{ a.destination_ip or "-" }}:{{ a.destination_port or "-" }}</code></td>
+              <td><small>{{ a.explanation }}</small></td>
+              <td><code>{{ a.packet_indices[:8] | join(", ") if a.packet_indices else "-" }}</code></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5">No specialized exfiltration, tunnelling, upload, or beaconing findings triggered.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>8. MITRE ATT&amp;CK Mappings</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Technique ID</th><th>Technique Name</th><th>Tactic</th><th>Confidence</th><th>Justification &amp; Reference</th></tr></thead>
+        <tbody>
+          {% for m in bundle.mitre_mappings %}
+            <tr>
+              <td><code>{{ m.technique_id }}</code></td>
+              <td>{{ m.technique_name }}</td>
+              <td>{{ m.tactic }}</td>
+              <td>{{ m.confidence_level }} ({{ (m.confidence_score * 100) | round | int }}%)</td>
+              <td>{{ m.reason }}<br><a href="{{ m.reference_url }}" target="_blank" rel="noopener noreferrer">{{ m.reference_url }}</a></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5">No MITRE ATT&amp;CK techniques met the evidence threshold.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>9. Chronological Incident Timeline</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Timestamp (UTC)</th><th>Source → Destination</th><th>Proto</th><th>Rule / Detector</th><th>Severity</th><th>MITRE</th><th>Summary</th></tr></thead>
+        <tbody>
+          {% for ev in bundle.timeline %}
+            <tr>
+              <td><code>{{ ev.timestamp }}</code></td>
+              <td><code>{{ ev.source_ip or "-" }}</code> → <code>{{ ev.destination_ip or "-" }}</code></td>
+              <td>{{ ev.protocol }}</td>
+              <td>{{ ev.detection_rule }}</td>
+              <td><span class="badge sev-{{ ev.severity }}">{{ ev.severity }}</span></td>
+              <td><code>{{ ev.mitre_techniques | join(", ") if ev.mitre_techniques else "-" }}</code></td>
+              <td>{{ ev.evidence_summary }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7">No timeline events recorded.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>10. Detailed Alert Appendix, Risk Scoring &amp; Packet-Level Evidence</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>Severity</th><th>Risk / Conf</th><th>Alert &amp; Scoring Rationale</th><th>Endpoints</th><th>Packet Refs</th><th>Explanation &amp; Allowlist</th></tr>
+        </thead>
+        <tbody>
+          {% for a in bundle.alerts %}
+            <tr>
+              <td><span class="badge sev-{{ a.severity }}">{{ a.severity }}</span>
+                {% if a.suppressed %}<div class="suppressed-tag">Allowlisted (Suppressed)</div>{% endif %}
+              </td>
+              <td>{{ a.priority_score }} / {{ (a.confidence * 100) | round | int }}%</td>
+              <td><strong>{{ a.title }}</strong><br><small>Status: {{ a.status }} | Rules: {{ a.contributing_rule_ids | join(", ") if a.contributing_rule_ids else a.detector_types | join(", ") }}<br>{{ a.priority_breakdown.rationale }}<br>{{ a.priority_breakdown.confidence_rationale | default("") }}</small></td>
+              <td><code>{{ a.source_ip or "-" }}:{{ a.source_port or "-" }}</code> → <code>{{ a.destination_ip or "-" }}:{{ a.destination_port or "-" }}</code></td>
+              <td><code>{{ a.packet_indices[:10] | join(", ") if a.packet_indices else "-" }}</code></td>
+              <td>
+                {{ a.explanation }}
+                {% if a.allowlist_match %}
+                  <br><small><strong>Allowlist Match:</strong> [{{ a.allowlist_match.category }}] {{ a.allowlist_match.matched_entry }} — {{ a.allowlist_match.reason }}</small>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6">No suspicious alerts triggered for this capture.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>11. Recommended Investigation Steps, Integrity &amp; Technical Limitations</h2>
+    <div class="card">
+      <h3>Recommended Analyst Next Steps</h3>
+      <ul>
+        {% for step in recommended_steps %}
+          <li>{{ step }}</li>
+        {% else %}
+          <li>Continue routine baseline monitoring; no immediate escalation actions required.</li>
+        {% endfor %}
+      </ul>
+
+      {% if bundle.threat_intelligence and bundle.threat_intelligence.results %}
+        <h3>Supplemental External Threat Intelligence ({{ bundle.threat_intelligence.source_label }})</h3>
+        <p><small>{{ bundle.threat_intelligence.disclaimer }}</small></p>
+        <ul>
+          {% for ti in bundle.threat_intelligence.results[:15] %}
+            <li><code>{{ ti.indicator }}</code> ({{ ti.provider }}): <strong>{{ ti.reputation }}</strong> — {{ ti.summary }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      <h3>Limitations &amp; Confidence Assessment</h3>
+      <ul>
+        {% for lim in bundle.limitations %}
+          <li>{{ lim }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

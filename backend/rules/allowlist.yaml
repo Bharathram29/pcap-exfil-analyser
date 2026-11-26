@@ -1,0 +1,49 @@
+# PCAP Exfiltration Analyser — False Positive Reduction & Allowlist Configuration
+#
+# IMPORTANT: Allowlisted matches are NEVER silently deleted. They are tagged with
+# suppressed=true and the matching allowlist_reason so SOC analysts can audit them.
+
+version: "1.0"
+description: "Trusted infrastructure, monitoring systems, and configurable exclusions"
+
+trusted_domains:
+  - pattern: "*.windowsupdate.com"
+    reason: "Approved OS patch delivery domain"
+  - pattern: "*.microsoft.com"
+    reason: "Approved enterprise Microsoft cloud endpoint"
+  - pattern: "telemetry.corp.internal"
+    reason: "Internal corporate telemetry collector"
+
+trusted_ips:
+  - ip: "10.250.0.10"
+    reason: "Authorised enterprise SIEM / log forwarder"
+
+internal_network_ranges:
+  - cidr: "10.0.0.0/8"
+    suppress_internal_only: true
+    reason: "RFC 1918 Class A internal network"
+  - cidr: "172.16.0.0/12"
+    suppress_internal_only: true
+    reason: "RFC 1918 Class B internal network"
+  - cidr: "192.168.0.0/16"
+    suppress_internal_only: true
+    reason: "RFC 1918 Class C internal network"
+
+approved_services:
+  - name: "Corporate Backup HTTPS"
+    ip: "198.51.100.250"
+    port: 443
+    protocol: "TLS"
+    reason: "Authorised off-site encrypted backup target"
+
+known_monitoring_systems:
+  - name: "Internal Prometheus / NetFlow Collector"
+    cidr: "10.250.10.0/24"
+    reason: "Authorised infrastructure health polling"
+
+exclusions:
+  - id: EXCL-001
+    detector_type: "suspicious_ports"
+    port: 8888
+    internal_only: true
+    reason: "Internal developer Jupyter/API servers use port 8888"
